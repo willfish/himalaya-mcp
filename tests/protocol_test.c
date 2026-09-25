@@ -111,6 +111,8 @@ int main(int argc, char **argv) {
     for (int i=0;i<4;i++) {
       cJSON *property = cJSON_GetObjectItemCaseSensitive(properties,keys[i]);
       if (!property) continue;
+      cJSON *tool_help = cJSON_GetObjectItemCaseSensitive(tool,"description");
+      if (!cJSON_IsString(tool_help) || !strstr(tool_help->valuestring,"Europe/London") || !strstr(tool_help->valuestring,"tomorrow at 9am")) fail("date instructions for clients omitting property descriptions");
       cJSON *help = cJSON_GetObjectItemCaseSensitive(property,"description");
       if (!cJSON_IsString(help) || !strstr(help->valuestring,"Europe/London") || !strstr(help->valuestring,"tomorrow at 9am")) fail("date discovery instructions");
       date_fields++;

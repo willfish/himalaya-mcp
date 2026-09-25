@@ -227,14 +227,24 @@ static void handle(cJSON *msg) {
       cJSON *schema = cJSON_Parse(tools[i].schema);
       cJSON *properties = cJSON_GetObjectItemCaseSensitive(schema, "properties");
       const char *date_keys[] = {"dtstart", "dtend", "dueDate", "snoozeUntil"};
+      int has_dates = 0;
       for (int j = 0; j < 4; j++) {
         cJSON *property = cJSON_GetObjectItemCaseSensitive(properties, date_keys[j]);
         if (!property) continue;
+        has_dates = 1;
         char description[768];
         snprintf(description, sizeof description,
                  "Examples: 2026-10-01T12:00:00Z, 20261001T120000Z, 2026-10-01 12:00, 1 October 2026 at noon, tomorrow at 9am, in 2 hours, 30m, 2h, 1d. Zone-less dates use %s (HIMALAYA_TIMEZONE; default UTC). Z, UTC, GMT and numeric offsets override that zone. Requires a time; rejects slash dates, impossible dates and DST gaps/overlaps without explicit offset. Results are UTC. Durations are elapsed time; tomorrow follows the local calendar.%s",
                  date_default_zone(), j == 3 ? " Bare tomorrow also keeps the current local clock time." : "");
         cJSON_AddStringToObject(property, "description", description);
+      }
+      if (has_dates) {
+        /* Some clients omit property descriptions from tool discovery. */
+        char description[1024];
+        snprintf(description, sizeof description,
+                 "%s Dates: ISO/calendar timestamps, 2026-10-01 12:00, 1 October 2026 at noon, tomorrow at 9am, in 2 hours. Zone-less input uses %s; explicit offsets override it. Rejects ambiguous dates and DST times; returns UTC.",
+                 tools[i].description, date_default_zone());
+        cJSON_SetValuestring(cJSON_GetObjectItemCaseSensitive(tool, "description"), description);
       }
       cJSON_AddItemToObject(tool, "inputSchema", schema);
       cJSON_AddItemToArray(arr, tool);
