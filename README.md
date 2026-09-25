@@ -166,12 +166,41 @@ It is not a sandbox. Mail content is untrusted input, not authority to run tools
 | --- | --- | --- |
 | `HIMALAYA_BINARY` | `himalaya` on `PATH` | CLI executable |
 | `HIMALAYA_TIMEOUT` | `60` | Timeout in seconds for each captured CLI invocation |
+| `HIMALAYA_TIMEZONE` | `UTC` | IANA timezone for dates without an explicit offset, e.g. `Europe/London` |
 | `XDG_STATE_HOME` | `$HOME/.local/state` | Parent of the `himalaya-mcp` state directory |
 
 Snoozes use `snooze.json`, reminders use `reminders.json`, and each calendar event
-gets its own private directory containing `event.ics`. Calendar start/end values
-must be UTC timestamps such as `20261001T120000Z`, with end after start. Snooze and
-reminder timestamps use ISO form such as `2026-10-01T12:00:00Z`.
+gets its own private directory containing `event.ics`.
+
+### Dates
+
+Calendars, reminders and snoozes share the same parser:
+
+| Form | Examples |
+| --- | --- |
+| ISO / calendar timestamp | `2026-10-01T12:00:00Z`, `20261001T120000Z` |
+| Local date and time | `2026-10-01 12:00`, `2026-10-01 12:00:30` |
+| English month name | `1 October 2026 at noon`, `1 Oct 2026 9:30am` |
+| Relative calendar date | `today at 2pm`, `tomorrow at 9am` |
+| Elapsed duration | `in 2 hours`, `in 30 minutes`, `30m`, `2h`, `1d` |
+
+`Z`, `UTC`, `GMT` or numeric offsets such as `+01:00` and `-0500` override the
+configured timezone. Zone-less inputs use `HIMALAYA_TIMEZONE`, not the process's
+implicit local timezone. Case and extra horizontal whitespace are tolerated.
+
+Results are normalised to UTC. Calendar previews show resolved start/end values
+and the configured timezone. Reuse those absolute values when confirming a
+relative-date preview, otherwise the reference clock advances between calls.
+Reminder responses and stored snooze/reminder dates include the resolved UTC time.
+
+`tomorrow` means the next local calendar day, including across DST changes;
+`in 1 day` means exactly 24 elapsed hours. For compatibility, snoozing also accepts
+bare `tomorrow`, keeping the current local clock time. Other inputs must include
+a time: date-only values do not silently become midnight. Ambiguous slash dates
+such as `01/02/2026`, impossible dates, unknown formats and DST gaps/overlaps are
+rejected with correction examples. Supply an explicit offset to disambiguate a
+DST transition. Named months are English; arbitrary natural-language phrases
+such as `next Friday` are not supported. Calendar end must resolve after start.
 
 Local state writes replace files atomically and report failures. Unreadable or
 invalid existing records are not overwritten. Multiple independent server
@@ -211,4 +240,13 @@ without touching the desktop clipboard. Protocol checks cover all prompts,
 resources/templates, argument types, malformed requests and notification handling.
 These isolated checks do not prove end-to-end delivery or desktop integration.
 
-`nix build` runs all three suites. There is no Python test dependency.
+`src/date.c` contains the shared date helpers. Its standalone unit suite injects
+the reference clock and timezone, covering formats, UTC normalisation, offsets,
+leap years, month/year rollovers, DST transitions and invalid input. Tool and
+protocol tests verify persistence, previews and discoverable date instructions.
+
+`nix build` runs all four suites and supplies pinned timezone data. Non-Nix builds
+use `/usr/share/zoneinfo`; override with `make TZDIR=/path/to/zoneinfo` if needed.
+The date helper temporarily changes and restores libc's timezone state and is
+intended for this single-threaded server, not concurrent callers. There is no
+Python test dependency.

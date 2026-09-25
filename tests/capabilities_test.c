@@ -70,6 +70,7 @@ int main(int argc,char **argv) {
   if (argc>2) return fake(argc,argv);
   char self[4096]; ssize_t length=readlink("/proc/self/exe",self,sizeof self-1); check(length>0,"executable path"); self[length]=0;
   setenv("HIMALAYA_BINARY",self,1);
+  setenv("HIMALAYA_TIMEZONE","UTC",1);
   setenv("HIMALAYA_TIMEOUT","1",1);
   char *sleep_args[] = {self,"--close-and-sleep",NULL};
   Capture captured={0};
@@ -120,9 +121,14 @@ int main(int argc,char **argv) {
   expect(tool_snooze_email,"{\"id\":\"1\",\"snoozeUntil\":\"2h\"}",0,"snoozed");
   expect(tool_snooze_email,"{\"id\":\"2\",\"snoozeUntil\":\"2028-02-29T12:00:00Z\"}",0,"2028-02-29");
   expect(tool_list_snoozed_emails,"{}",0,"snoozeUntil");
+  expect(tool_snooze_email,"{\"id\":\"3\",\"snoozeUntil\":\"1 October 2026 at noon +01:00\"}",0,"2026-10-01T11:00:00Z");
+  expect(tool_list_snoozed_emails,"{}",0,"2026-10-01T11:00:00Z");
+  expect(tool_create_reminder,"{\"title\":\"Named date\",\"dueDate\":\"1 October 2026 at noon +01:00\"}",0,"2026-10-01T11:00:00Z");
+  expect(tool_create_reminder,"{\"title\":\"Ambiguous date\",\"dueDate\":\"01/02/2026 12:00\"}",1,"ambiguous");
   expect(tool_create_reminder,"{\"title\":\"Test\",\"notes\":\"Notes\",\"priority\":3,\"dueDate\":\"2027-01-01T12:00:00Z\"}",0,"stored");
   char *path=state_file("reminders.json"), *text=read_file(path,4096);
-  check(text && strstr(text,"\"priority\":\t3"),"reminder priority preserved"); free(text);
+  check(text && strstr(text,"\"priority\":\t3"),"reminder priority preserved");
+  check(text && strstr(text,"2026-10-01T11:00:00Z"),"normalised reminder persisted"); free(text);
   check(!write_file(path,"broken JSON"),"corrupt fixture");
   expect(tool_create_reminder,"{\"title\":\"Test\"}",1,"unchanged");
   text=read_file(path,4096); check(text && !strcmp(text,"broken JSON"),"corrupt state not erased"); free(text);
@@ -132,6 +138,9 @@ int main(int argc,char **argv) {
   unlink(path); free(path);
   const char *event="{\"summary\":\"Test, semi; slash\\\\ and\\nnewline\",\"dtstart\":\"20261001T120000Z\",\"dtend\":\"20261001T123000Z\",\"location\":\"Here\",\"description\":\"Notes\"}";
   expect(tool_create_calendar_event,event,0,"PREVIEW");
+  expect(tool_create_calendar_event,"{\"summary\":\"Named date\",\"dtstart\":\"1 October 2026 at noon +01:00\",\"dtend\":\"2026-10-01T12:30:00+01:00\"}",0,"Start: 2026-10-01T11:00:00Z");
+  expect(tool_create_calendar_event,"{\"summary\":\"Offset ordering\",\"dtstart\":\"2026-10-01T12:00:00Z\",\"dtend\":\"2026-10-01T12:30:00+01:00\"}",1,"after dtstart");
+  expect(tool_create_calendar_event,"{\"summary\":\"Relative\",\"dtstart\":\"in 2 hours\",\"dtend\":\"in 3 hours\"}",0,"Zone-less input timezone: UTC");
   args=cJSON_Parse(event); cJSON_AddBoolToObject(args,"confirm",1);
   Result first=tool_create_calendar_event(args), second=tool_create_calendar_event(args);
   check(!first.is_error && !second.is_error && strcmp(first.text,second.text),"calendar does not overwrite preceding event");
@@ -139,7 +148,7 @@ int main(int argc,char **argv) {
   text=read_file(first.text+6,8192);
   check(text && strstr(text,"VERSION:2.0\r\n") && strstr(text,"UID:") && strstr(text,"DTSTAMP:") && strstr(text,"LOCATION:Here") && strstr(text,"DESCRIPTION:Notes") && strstr(text,"Test\\, semi\\;"),"calendar RFC fields and escaping");
   free(text); result_free(first); result_free(second); cJSON_Delete(args);
-  expect(tool_create_calendar_event,"{\"summary\":\"x\",\"dtstart\":\"bad\",\"dtend\":\"bad\"}",1,"UTC");
+  expect(tool_create_calendar_event,"{\"summary\":\"x\",\"dtstart\":\"bad\",\"dtend\":\"bad\"}",1,"dtstart");
   setenv("XDG_STATE_HOME","/dev/null",1);
   expect(tool_create_reminder,"{\"title\":\"x\"}",1,NULL);
   expect(tool_snooze_email,"{\"id\":\"1\",\"snoozeUntil\":\"2h\"}",1,NULL);

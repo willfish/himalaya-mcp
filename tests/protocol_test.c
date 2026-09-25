@@ -73,6 +73,7 @@ int main(int argc, char **argv) {
   write_fake(fake, log);
   setenv("HIMALAYA_BINARY", fake, 1);
   setenv("XDG_STATE_HOME", state, 1);
+  setenv("HIMALAYA_TIMEZONE", "Europe/London", 1);
 
   int in[2], out[2];
   if (pipe(in) < 0 || pipe(out) < 0) fail("pipe");
@@ -101,7 +102,26 @@ int main(int argc, char **argv) {
   cJSON *tools = rpc(to, from, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
   cJSON *tool_arr = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(tools, "result"), "tools");
   if (!cJSON_IsArray(tool_arr) || cJSON_GetArraySize(tool_arr) != 30) fail("tool count");
+  int date_fields = 0;
+  cJSON *tool;
+  cJSON_ArrayForEach(tool, tool_arr) {
+    cJSON *schema = cJSON_GetObjectItemCaseSensitive(tool,"inputSchema");
+    cJSON *properties = cJSON_GetObjectItemCaseSensitive(schema,"properties");
+    const char *keys[] = {"dtstart","dtend","snoozeUntil","dueDate"};
+    for (int i=0;i<4;i++) {
+      cJSON *property = cJSON_GetObjectItemCaseSensitive(properties,keys[i]);
+      if (!property) continue;
+      cJSON *help = cJSON_GetObjectItemCaseSensitive(property,"description");
+      if (!cJSON_IsString(help) || !strstr(help->valuestring,"Europe/London") || !strstr(help->valuestring,"tomorrow at 9am")) fail("date discovery instructions");
+      date_fields++;
+    }
+  }
+  if (date_fields!=4) fail("date field coverage");
   cJSON_Delete(tools);
+  cJSON *calendar = rpc(to,from,"{\"jsonrpc\":\"2.0\",\"id\":40,\"method\":\"tools/call\",\"params\":{\"name\":\"create_calendar_event\",\"arguments\":{\"summary\":\"Synthetic\",\"dtstart\":\"1 October 2026 at noon\",\"dtend\":\"2026-10-01 12:30\"}}}");
+  char *calendar_text = cJSON_PrintUnformatted(calendar);
+  if (!strstr(calendar_text,"Start: 2026-10-01T11:00:00Z") || !strstr(calendar_text,"End: 2026-10-01T11:30:00Z") || !strstr(calendar_text,"Europe/London")) fail("wire calendar date normalisation");
+  free(calendar_text); cJSON_Delete(calendar);
 
   cJSON *prompts = rpc(to, from, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"prompts/list\"}");
   cJSON *prompt_arr = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(prompts, "result"), "prompts");

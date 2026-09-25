@@ -4,5 +4,6 @@ himalaya-mcp
 protocol_test
 mail_test
 capabilities_test
+date_test
 .direnv
 .pre-commit-config.yaml

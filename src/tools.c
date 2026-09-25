@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "date.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -643,15 +644,6 @@ Result tool_extract_calendar_event(const cJSON *args) {
   return result_ok(ics);
 }
 
-static int valid_date(int year, int month, int day, int hour, int min, int sec);
-
-static int calendar_time(const char *s) {
-  if (!s || strlen(s) != 16 || s[8] != 'T' || s[15] != 'Z') return 0;
-  for (int i = 0; i < 15; i++) if (i != 8 && !isdigit((unsigned char)s[i])) return 0;
-  int y, mo, d, h, mi, sec;
-  return sscanf(s, "%4d%2d%2dT%2d%2d%2dZ", &y,&mo,&d,&h,&mi,&sec) == 6 && valid_date(y,mo,d,h,mi,sec);
-}
-
 static char *calendar_escape(const char *s) {
   if (!s) s = "";
   char *out = malloc(strlen(s) * 2 + 1), *w = out;
@@ -666,13 +658,17 @@ static char *calendar_escape(const char *s) {
 
 Result tool_create_calendar_event(const cJSON *args) {
   const char *summary = arg_str(args, "summary"), *start = arg_str(args, "dtstart"), *end = arg_str(args, "dtend");
-  if (!summary || !*summary || !calendar_time(start) || !calendar_time(end) || strcmp(start, end) >= 0)
-    return result_err("summary and increasing UTC timestamps YYYYMMDDTHHMMSSZ are required");
-  char stamp[32];
+  if (!summary || !*summary) return result_err("summary is required");
   time_t now = time(NULL);
-  struct tm tm;
-  gmtime_r(&now, &tm);
-  strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", &tm);
+  MailDate from, to, created;
+  char error[256];
+  const char *zone = date_default_zone();
+  if (date_parse(start, now, zone, 0, &from, error, sizeof error)) return result_errf("dtstart: %s", error);
+  if (date_parse(end, now, zone, 0, &to, error, sizeof error)) return result_errf("dtend: %s", error);
+  if (from.instant >= to.instant) return result_err("dtend must resolve to an instant after dtstart");
+  if (date_format_utc(now, &created)) return result_err("invalid system clock");
+  const char *stamp = created.ical;
+  start = from.ical; end = to.ical;
   char *s = calendar_escape(summary), *location = calendar_escape(arg_str(args, "location")), *description = calendar_escape(arg_str(args, "description"));
   static unsigned sequence;
   size_t size = strlen(s) + strlen(location) + strlen(description) + 512;
@@ -690,8 +686,8 @@ Result tool_create_calendar_event(const cJSON *args) {
   *w = 0;
   free(raw);
   if (!arg_bool(args, "confirm")) {
-    char *preview = malloc(strlen(ics) + 96);
-    sprintf(preview, "PREVIEW: calendar event not created. Call again with confirm=true.\n\n%s", ics);
+    char *preview = malloc(strlen(ics) + strlen(zone) + 384);
+    sprintf(preview, "PREVIEW: calendar event not created. Confirm with these resolved UTC values to avoid relative-time drift.\nStart: %s\nEnd: %s\nZone-less input timezone: %s\nCall again with confirm=true.\n\n%s", from.iso, to.iso, zone, ics);
     free(ics);
     return result_ok(preview);
   }
@@ -734,52 +730,6 @@ Result tool_read_thread(const cJSON *args) {
   return result_ok(out);
 }
 
-static void iso_now(char *dst, size_t n, time_t when) {
-  struct tm tm;
-  localtime_r(&when, &tm);
-  strftime(dst, n, "%Y-%m-%dT%H:%M:%S", &tm);
-}
-
-static int valid_date(int year, int month, int day, int hour, int min, int sec) {
-  const int days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-  if (year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1 || hour < 0 || hour > 23 || min < 0 || min > 59 || sec < 0 || sec > 59) return 0;
-  int leap = month == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-  return day <= days[month - 1] + leap;
-}
-
-static int valid_iso(const char *text) {
-  int y, mo, d, h, mi, s, pos = 0;
-  if (sscanf(text, "%4d-%2d-%2dT%2d:%2d:%2d%n", &y, &mo, &d, &h, &mi, &s, &pos) != 6 || pos != 19 || !valid_date(y,mo,d,h,mi,s)) return 0;
-  char canonical[32];
-  snprintf(canonical, sizeof canonical, "%04d-%02d-%02dT%02d:%02d:%02d", y,mo,d,h,mi,s);
-  if (strncmp(text, canonical, 19)) return 0;
-  const char *zone = text + 19;
-  if (!*zone || !strcmp(zone, "Z")) return 1;
-  if (strlen(zone) != 6 || zone[3] != ':' || !isdigit((unsigned char)zone[1]) || !isdigit((unsigned char)zone[2]) || !isdigit((unsigned char)zone[4]) || !isdigit((unsigned char)zone[5])) return 0;
-  int zh, zm, used = 0;
-  return (*zone == '+' || *zone == '-') && sscanf(zone + 1, "%2d:%2d%n", &zh, &zm, &used) == 2 && used == 5 && strlen(zone) == 6 && zh >= 0 && zh <= 23 && zm >= 0 && zm <= 59;
-}
-
-static int parse_until(const char *text, char *dst, size_t n) {
-  time_t now = time(NULL);
-  if (!text || !*text) return -1;
-  if (!strcmp(text, "tomorrow")) {
-    iso_now(dst, n, now + 24 * 60 * 60);
-    return 0;
-  }
-  if (text[strlen(text) - 1] == 'h' || text[strlen(text) - 1] == 'd') {
-    char *end;
-    errno = 0;
-    long num = strtol(text, &end, 10);
-    if (errno || num <= 0 || num > 36500 || end != text + strlen(text) - 1) return -1;
-    iso_now(dst, n, now + (text[strlen(text) - 1] == 'h' ? num * 3600L : num * 86400L));
-    return 0;
-  }
-  if (!valid_iso(text) || strlen(text) >= n) return -1;
-  snprintf(dst, n, "%s", text);
-  return 0;
-}
-
 static cJSON *load_records(const char *path) {
   errno = 0;
   char *existing = read_file(path, 1024 * 1024);
@@ -796,8 +746,11 @@ Result tool_snooze_email(const cJSON *args) {
   const char *account = account_of(args);
   const char *folder = folder_of(args);
   if (!valid_id(id) || !account || !folder || !until_in) return result_err("id and snoozeUntil are required");
-  char until[64];
-  if (parse_until(until_in, until, sizeof until) < 0) return result_err("could not parse snoozeUntil");
+  MailDate parsed;
+  char error[256];
+  if (date_parse(until_in, time(NULL), date_default_zone(), DATE_ALLOW_BARE_TOMORROW, &parsed, error, sizeof error))
+    return result_errf("could not parse snoozeUntil: %s", error);
+  const char *until = parsed.iso;
   char *path = state_file("snooze.json");
   cJSON *arr = load_records(path);
   if (!arr) { free(path); return result_err("cannot read snooze records; existing state left unchanged"); }
@@ -834,7 +787,12 @@ Result tool_create_reminder(const cJSON *args) {
   const char *title = arg_str(args, "title");
   if (!title || !*title || strpbrk(title, "\r\n")) return result_err("title is required");
   const char *due = arg_str(args, "dueDate");
-  if (due && !valid_iso(due)) return result_err("dueDate must be an ISO timestamp");
+  MailDate parsed;
+  char error[256];
+  if (due) {
+    if (date_parse(due, time(NULL), date_default_zone(), 0, &parsed, error, sizeof error)) return result_errf("dueDate: %s", error);
+    due = parsed.iso;
+  }
   int priority = arg_int(args, "priority", 0);
   if (priority < 0 || priority > 9) return result_err("priority must be between 0 and 9");
   char *path = state_file("reminders.json");
@@ -848,8 +806,9 @@ Result tool_create_reminder(const cJSON *args) {
   cJSON_AddItemToArray(arr, item);
   char *printed = cJSON_Print(arr);
   int failed = write_file(path, printed);
-  char *text = malloc(strlen(title) + 32);
-  sprintf(text, "reminder stored: %s\n", title);
+  char *text = malloc(strlen(title) + 96);
+  if (due) sprintf(text, "reminder stored: %s\ndue: %s (UTC)\n", title, due);
+  else sprintf(text, "reminder stored: %s\n", title);
   free(printed);
   free(path);
   cJSON_Delete(arr);

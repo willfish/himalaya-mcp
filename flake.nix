@@ -16,6 +16,7 @@
           src = ./.;
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.cjson ];
+          TZDIR = "${pkgs.tzdata}/share/zoneinfo";
           buildPhase = "make -j$NIX_BUILD_CORES";
           doCheck = true;
           checkPhase = "make test";

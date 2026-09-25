@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "date.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,7 +83,7 @@ static const Tool tools[] = {
     {"extract_calendar_event", "Return the first ICS attachment from a message. Marks the message Seen.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
      tool_extract_calendar_event},
-    {"create_calendar_event", "Write a new local ICS file, not a calendar-service entry. UTC dates must be YYYYMMDDTHHMMSSZ with end after start. Requires confirm=true.",
+    {"create_calendar_event", "Write a new local ICS file, not a calendar-service entry. Accepts flexible dates; preview shows resolved UTC times. Reuse those absolute times when confirming. End must be after start. Requires confirm=true.",
      "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"dtstart\":{\"type\":\"string\"},\"dtend\":{\"type\":\"string\"},\"location\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"},\"confirm\":{\"type\":\"boolean\"}},\"required\":[\"summary\",\"dtstart\",\"dtend\"]}",
      tool_create_calendar_event},
     {"list_threads", "List recent envelopes so conversations can be grouped by subject.",
@@ -91,12 +92,12 @@ static const Tool tools[] = {
     {"read_thread", "List up to 20 matching subject envelopes, not a complete thread. thread_id is a literal subject fragment without quotes or backslashes.",
      "{\"type\":\"object\",\"properties\":{\"thread_id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"thread_id\"]}",
      tool_read_thread},
-    {"snooze_email", "Store a local snooze record (ISO timestamp, tomorrow, Nh, or Nd). Does not move mail, schedule a wake-up or notify.",
+    {"snooze_email", "Store a local snooze record with a flexible date, normalised to UTC. Bare tomorrow means the same local clock time next day. Does not move mail, schedule a wake-up or notify.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"snoozeUntil\":{\"type\":\"string\"}},\"required\":[\"id\",\"snoozeUntil\"]}",
      tool_snooze_email},
     {"list_snoozed_emails", "List locally snoozed messages.",
      "{\"type\":\"object\",\"properties\":{}}", tool_list_snoozed_emails},
-    {"create_reminder", "Store a reminder locally without scheduling notifications. dueDate is an ISO timestamp; priority is 0-9.",
+    {"create_reminder", "Store a reminder locally without scheduling notifications. dueDate accepts flexible dates and is stored/reported in UTC; priority is 0-9.",
      "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"notes\":{\"type\":\"string\"},\"dueDate\":{\"type\":\"string\"},\"priority\":{\"type\":\"integer\"}},\"required\":[\"title\"]}",
      tool_create_reminder},
     {"health_check", "List accounts and folders to check that himalaya can reach mail.",
@@ -223,7 +224,19 @@ static void handle(cJSON *msg) {
       cJSON *tool = cJSON_CreateObject();
       cJSON_AddStringToObject(tool, "name", tools[i].name);
       cJSON_AddStringToObject(tool, "description", tools[i].description);
-      cJSON_AddItemToObject(tool, "inputSchema", cJSON_Parse(tools[i].schema));
+      cJSON *schema = cJSON_Parse(tools[i].schema);
+      cJSON *properties = cJSON_GetObjectItemCaseSensitive(schema, "properties");
+      const char *date_keys[] = {"dtstart", "dtend", "dueDate", "snoozeUntil"};
+      for (int j = 0; j < 4; j++) {
+        cJSON *property = cJSON_GetObjectItemCaseSensitive(properties, date_keys[j]);
+        if (!property) continue;
+        char description[768];
+        snprintf(description, sizeof description,
+                 "Examples: 2026-10-01T12:00:00Z, 20261001T120000Z, 2026-10-01 12:00, 1 October 2026 at noon, tomorrow at 9am, in 2 hours, 30m, 2h, 1d. Zone-less dates use %s (HIMALAYA_TIMEZONE; default UTC). Z, UTC, GMT and numeric offsets override that zone. Requires a time; rejects slash dates, impossible dates and DST gaps/overlaps without explicit offset. Results are UTC. Durations are elapsed time; tomorrow follows the local calendar.%s",
+                 date_default_zone(), j == 3 ? " Bare tomorrow also keeps the current local clock time." : "");
+        cJSON_AddStringToObject(property, "description", description);
+      }
+      cJSON_AddItemToObject(tool, "inputSchema", schema);
       cJSON_AddItemToArray(arr, tool);
     }
     reply(id, result, NULL);
