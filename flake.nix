@@ -21,7 +21,7 @@
           doCheck = true;
           checkPhase = "make test";
           installPhase = ''
-            install -Dm755 himalaya-mcp $out/bin/himalaya-mcp
+            make install PREFIX="$out"
           '';
         };
       });

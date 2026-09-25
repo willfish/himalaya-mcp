@@ -53,16 +53,63 @@ are package definitions, not a guarantee of runtime validation on each platform.
 
 ### From source
 
-Requires a C11 compiler, Make, pkg-config and the cJSON development headers/library.
+Requires a C11 compiler, C library headers, Make, pkg-config and cJSON development
+headers/library. Install the prerequisites as root using your distribution's
+package manager:
+
+```sh
+# Ubuntu / Debian
+apt-get update
+apt-get install gcc libc6-dev make pkg-config libcjson-dev tzdata ca-certificates
+
+# Arch (upgrade the system together with its packages)
+pacman -Syu --needed gcc make pkgconf cjson tzdata ca-certificates
+
+# Fedora
+dnf install gcc make pkgconf-pkg-config cjson-devel tzdata ca-certificates
+
+# Alpine
+apk add gcc musl-dev make pkgconf cjson-dev tzdata ca-certificates
+```
+
+Install [Himalaya 1.2.0](https://github.com/pimalaya/himalaya/releases/tag/v1.2.0)
+separately, using the release asset for your architecture and verifying its SHA-256
+digest. Keep the cJSON runtime library, timezone data and CA certificates installed;
+the MCP binary does not bundle them. Clipboard tools additionally need `wl-copy`,
+`xclip` or `pbcopy` and a working desktop session.
+
+With Git available, clone and build as your normal user:
 
 ```sh
 git clone git@github.com:willfish/himalaya-mcp.git
 cd himalaya-mcp
 make
-./himalaya-mcp doctor
+make test
+make install PREFIX="$HOME/.local"
+"$HOME/.local/bin/himalaya-mcp" doctor
 ```
 
-`make` produces `./himalaya-mcp`. There is no Make install target.
+Add `$HOME/.local/bin` to `PATH`, or configure your MCP client with the absolute
+binary path. `doctor` checks the configured Himalaya accounts and folders, so it
+requires an account, not just an installed CLI.
+
+The default `make install` destination is `/usr/local/bin` on all these distributions
+and normally needs root privileges. Override `PREFIX` for another installation
+root, `BINDIR` for an exact executable directory, or `DESTDIR` for package staging:
+
+```sh
+sudo make install                         # /usr/local/bin/himalaya-mcp
+make install PREFIX="$HOME/tools"         # ~/tools/bin/himalaya-mcp
+make install PREFIX=/usr DESTDIR="$PWD/stage"  # stage/usr/bin/himalaya-mcp
+make uninstall PREFIX="$HOME/.local"
+```
+
+Use the same path overrides when uninstalling. Only the MCP executable is removed;
+Himalaya, configuration and local records are left alone. The Makefile does not
+install dependencies, edit shell startup files or invoke sudo.
+
+See [manual container checks](docs/manual-install-checks.md) for isolated validation
+without real mail credentials. Linux containers do not validate macOS or Windows.
 
 ## Connect an MCP client
 

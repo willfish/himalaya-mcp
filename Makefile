@@ -1,3 +1,8 @@
+PREFIX ?= /usr/local
+BINDIR ?= $(PREFIX)/bin
+DESTDIR ?=
+INSTALL ?= install
+
 CC ?= gcc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror
 CJSON_CFLAGS := $(shell pkg-config --cflags libcjson)
@@ -7,7 +12,7 @@ DATE_CFLAGS := -DDATE_ZONEINFO_DIR=\"$(TZDIR)\"
 CORE := src/util.c src/tools.c src/date.c
 HEADERS := src/common.h src/tools.h src/date.h
 
-.PHONY: all test clean
+.PHONY: all test install uninstall clean
 
 all: himalaya-mcp
 
@@ -31,6 +36,13 @@ test: himalaya-mcp protocol_test mail_test capabilities_test date_test
 	./mail_test
 	./capabilities_test
 	./date_test
+
+install: himalaya-mcp
+	$(INSTALL) -d "$(DESTDIR)$(BINDIR)"
+	$(INSTALL) -m 755 himalaya-mcp "$(DESTDIR)$(BINDIR)/himalaya-mcp"
+
+uninstall:
+	rm -f "$(DESTDIR)$(BINDIR)/himalaya-mcp"
 
 clean:
 	rm -f himalaya-mcp protocol_test mail_test capabilities_test date_test
