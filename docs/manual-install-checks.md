@@ -56,7 +56,7 @@ docker exec -it himalaya-check sh
 ```
 
 Inside that root shell, run only the matching prerequisite commands from the
-[README](../README.md#from-source), then `exit`. The package names differ; Ubuntu
+[source-build guide](building.md#prerequisites), then `exit`. The package names differ; Ubuntu
 needs `libc6-dev` and Alpine needs `musl-dev`, not just GCC.
 
 Download the real Himalaya CLI on the host. This checksum is for the **x86_64
