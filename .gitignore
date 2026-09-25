@@ -1,0 +1,5 @@
+result
+*.o
+himalaya-mcp
+.direnv
+.pre-commit-config.yaml
