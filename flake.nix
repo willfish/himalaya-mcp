@@ -14,18 +14,11 @@
           pname = "himalaya-mcp";
           version = "0.1.0";
           src = ./.;
-          nativeBuildInputs = [ pkgs.pkg-config pkgs.python3 ];
+          nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.cjson ];
-          buildPhase = ''
-            $CC -std=c11 -O2 -Wall -Wextra -Werror \
-              $(pkg-config --cflags libcjson) \
-              -o himalaya-mcp src/main.c src/util.c src/tools.c \
-              $(pkg-config --libs libcjson)
-          '';
+          buildPhase = "make -j$NIX_BUILD_CORES";
           doCheck = true;
-          checkPhase = ''
-            python3 tests/protocol_test.py ./himalaya-mcp
-          '';
+          checkPhase = "make test";
           installPhase = ''
             install -Dm755 himalaya-mcp $out/bin/himalaya-mcp
           '';
