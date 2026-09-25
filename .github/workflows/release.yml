@@ -20,8 +20,16 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
+            platform: linux
             arch: x86_64
           - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+          - runner: macos-15-intel
+            platform: darwin
+            arch: x86_64
+          - runner: macos-15
+            platform: darwin
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
@@ -30,16 +38,24 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.version || github.ref }}
       - name: Build static binary and run all C tests natively
+        if: runner.os == 'Linux'
         env:
           VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           grep -F "version=\${HIMALAYA_MCP_VERSION:-$VERSION}" install
           docker build --file packaging/Dockerfile --build-arg VERSION="$VERSION" --output type=local,dest=dist .
+      - name: Build macOS binary and run all C tests natively
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          grep -F "version=\${HIMALAYA_MCP_VERSION:-$VERSION}" install
+          sh packaging/build-macos
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: linux-${{ matrix.arch }}
-          path: dist/*.tar.gz
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 7
   publish:
@@ -54,7 +70,7 @@ jobs:
           ref: ${{ inputs.version || github.ref }}
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          pattern: linux-*
+          pattern: release-*
           path: dist
           merge-multiple: true
       - name: Publish complete release
@@ -66,6 +82,6 @@ jobs:
           cd dist
           sha256sum -- *.tar.gz install > SHA256SUMS
           gh release create "$VERSION" --verify-tag --draft --title "$VERSION" \
-            --notes 'Static Linux x86_64 and ARM64 binaries with timezone data. The installer also downloads checksum-pinned Himalaya 1.2.0. Both architectures run the full C suites before publication. See the README for installation and supported platforms.' \
+            --notes 'Linux and macOS x86_64/ARM64 binaries with timezone data. The installer also downloads checksum-pinned Himalaya 1.2.0. macOS 13+ binaries are ad-hoc signed, not notarised. See the README for installation and supported platforms.' \
             ./*.tar.gz install SHA256SUMS
           gh release edit "$VERSION" --draft=false --latest

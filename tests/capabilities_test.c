@@ -4,6 +4,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 static unsigned checks;
 static void check(int ok, const char *what) {
@@ -68,7 +71,14 @@ int main(int argc,char **argv) {
     return fclose(dest) ? 5 : 0;
   }
   if (argc>2) return fake(argc,argv);
-  char self[4096]; ssize_t length=readlink("/proc/self/exe",self,sizeof self-1); check(length>0,"executable path"); self[length]=0;
+  char self[4096];
+#ifdef __APPLE__
+  char executable[4096]; uint32_t self_size=sizeof executable;
+  check(!_NSGetExecutablePath(executable,&self_size) && realpath(executable,self),"executable path");
+#else
+  ssize_t length=readlink("/proc/self/exe",self,sizeof self-1);
+  check(length>0 && (size_t)length<sizeof self-1,"executable path"); self[length]=0;
+#endif
   setenv("HIMALAYA_BINARY",self,1);
   setenv("HIMALAYA_TIMEZONE","UTC",1);
   setenv("HIMALAYA_TIMEOUT","1",1);

@@ -1,6 +1,10 @@
 #pragma once
 
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+/* Darwin keeps mkdtemp and related declarations behind its extension flag. */
+#define _DARWIN_C_SOURCE
+#endif
 
 #include <cjson/cJSON.h>
 #include <stddef.h>

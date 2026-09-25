@@ -5,8 +5,8 @@ INSTALL ?= install
 
 CC ?= gcc
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror
-CJSON_CFLAGS := $(shell pkg-config --cflags libcjson)
-CJSON_LIBS := $(shell pkg-config --libs libcjson)
+CJSON_CFLAGS = $(shell pkg-config --cflags libcjson)
+CJSON_LIBS = $(shell pkg-config --libs libcjson)
 TZDIR ?= /usr/share/zoneinfo
 DATE_CFLAGS := -DDATE_ZONEINFO_DIR=\"$(TZDIR)\"
 CORE := src/util.c src/tools.c src/date.c

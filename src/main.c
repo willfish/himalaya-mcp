@@ -209,7 +209,7 @@ static void handle(cJSON *msg) {
     cJSON_AddObjectToObject(caps, "resources");
     cJSON *info = cJSON_AddObjectToObject(result, "serverInfo");
     cJSON_AddStringToObject(info, "name", "himalaya-mcp");
-    cJSON_AddStringToObject(info, "version", "0.2.1");
+    cJSON_AddStringToObject(info, "version", "0.3.0");
     reply(id, result, NULL);
     return;
   }

@@ -1,0 +1,38 @@
+#!/bin/sh
+# Build on the native architecture. Only Apple's system library is dynamic.
+set -eu
+[ "$(uname -s)" = Darwin ] || { echo 'Build this artifact on macOS.' >&2; exit 1; }
+: "${VERSION:?Set VERSION to vMAJOR.MINOR.PATCH}"
+printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+case "$(uname -m)" in
+  arm64) arch=aarch64 ;;
+  x86_64) arch=x86_64 ;;
+  *) echo 'Unsupported build architecture.' >&2; exit 1 ;;
+esac
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+trap 'exit 1' HUP INT TERM
+revision=c859b25da02955fef659d658b8f324b5cde87be3
+curl -fLsS --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  "https://codeload.github.com/DaveGamble/cJSON/tar.gz/$revision" -o "$work/cjson.tar.gz"
+(cd "$work" && printf '%s\n' '880a86445ad5cf38f877bac31198268d8fac5d2ce996ebf55d3066a4109ddd8d  cjson.tar.gz' | shasum -a 256 -c -)
+tar --no-same-owner -xzf "$work/cjson.tar.gz" -C "$work"
+mkdir -p "$work/include"
+mv "$work/cJSON-$revision" "$work/include/cjson"
+export MACOSX_DEPLOYMENT_TARGET=13.0
+make clean
+make himalaya-mcp CC=cc CFLAGS='-std=c11 -Os -Wall -Wextra -Werror' \
+  CJSON_CFLAGS="-I\"$work/include\"" CJSON_LIBS="\"$work/include/cjson/cJSON.c\""
+otool -L himalaya-mcp > "$work/libraries"
+# Reject accidental Homebrew, Nix or developer-machine library dependencies.
+awk '{print} NR > 1 && $1 != "/usr/lib/libSystem.B.dylib" {bad=1} END {exit (bad || NR < 2)}' "$work/libraries"
+codesign --force --sign - himalaya-mcp
+codesign --verify --strict himalaya-mcp
+make test CC=cc CFLAGS='-std=c11 -Os -Wall -Wextra -Werror' \
+  CJSON_CFLAGS="-I\"$work/include\"" CJSON_LIBS="\"$work/include/cjson/cJSON.c\""
+mkdir -p "$work/package/licenses" dist
+cp himalaya-mcp "$work/package/"
+cp -RL /usr/share/zoneinfo "$work/package/zoneinfo"
+cp packaging/licenses/cJSON.txt packaging/licenses/tzdata.txt "$work/package/licenses/"
+printf 'cJSON 1.7.19 (%s)\nmacOS deployment target 13.0\n' "$revision" > "$work/package/BUILD-DEPENDENCIES.txt"
+COPYFILE_DISABLE=1 tar -czf "dist/himalaya-mcp-$VERSION-darwin-$arch.tar.gz" -C "$work/package" .

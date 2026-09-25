@@ -1,4 +1,5 @@
 result
+/dist/
 *.o
 himalaya-mcp
 protocol_test

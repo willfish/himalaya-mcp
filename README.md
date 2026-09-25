@@ -33,22 +33,28 @@ Mail tools require a configured Himalaya account. The current command mappings
 target Himalaya 1.2.0; compatibility with other CLI versions is not established.
 Installation itself does not need credentials.
 
-### Linux (curl)
+### Linux and macOS (curl)
 
-For x86_64 and ARM64 Linux, including glibc and musl distributions:
+For x86_64 and ARM64 Linux (glibc or musl), and Intel or Apple Silicon Macs
+running macOS 13 or newer:
 
 ```sh
 curl -fsSL https://github.com/willfish/himalaya-mcp/releases/latest/download/install | sh
 ```
 
-Requires `curl`, system CA certificates, a POSIX shell, `tar`, `sha256sum` and
-standard Unix utilities. No compiler, cJSON package or system timezone package is
-needed. The installer downloads a statically linked MCP with timezone data, plus
-checksum-pinned Himalaya 1.2.0 into a private directory. It does not replace your
+Requires `curl`, system CA certificates, a POSIX shell, `tar`, `sha256sum` or macOS's
+built-in `shasum`, and standard Unix utilities. No compiler, Homebrew, cJSON package
+or additional timezone package is needed. Linux binaries are static; macOS binaries
+embed cJSON and link only to Apple's system library. The installer downloads the
+MCP, timezone data and checksum-pinned Himalaya 1.2.0 into a private directory. It does not replace your
 existing `himalaya` command, change account credentials, invoke sudo or edit `PATH`.
 
-The default prefix is `$HOME/.local`, or `/usr/local` when run as root. Override it
-on the **shell side** of the pipe:
+The default prefix is `$HOME/.local` on both systems, or `/usr/local` when run as
+root. On macOS this avoids Homebrew-owned `/opt/homebrew` directories and requires
+no administrator access. The macOS MCP binary is ad-hoc signed, not Developer ID
+signed or notarised; the installer does not disable Gatekeeper.
+
+Override the prefix on the **shell side** of the pipe:
 
 ```sh
 curl -fsSL https://github.com/willfish/himalaya-mcp/releases/latest/download/install \
@@ -60,7 +66,7 @@ private CLI and timezone paths; `HIMALAYA_BINARY` and `HIMALAYA_ZONEINFO_DIR` ca
 override them. It reads your normal Himalaya account configuration. After account
 setup, run `<prefix>/bin/himalaya-mcp doctor`.
 
-To pin a release, use `/releases/download/v0.2.1/install` instead of
+To pin a release, use `/releases/download/v0.3.0/install` instead of
 `/releases/latest/download/install`. You can also download `install`, inspect it,
 then run `sh install`. Archive checksums detect corruption against the GitHub
 release manifest; they are not an independent signature or a substitute for
@@ -71,9 +77,9 @@ Previous payloads remain under `<prefix>/libexec/himalaya-mcp` so running server
 are not disrupted. Remove the launcher and that private directory to uninstall;
 your mail configuration and local reminder/snooze records remain untouched.
 
-Release CI builds and runs the C suites natively on x86_64 and ARM64 before
-publishing either artifact. Other operating systems and architectures are rejected
-by the installer rather than guessed. Manual distro checks are separate from the
+Release CI builds and runs the C suites natively on Linux and macOS, on both
+x86_64 and ARM64, before publishing the four artifacts. Other operating systems
+and architectures are rejected by the installer rather than guessed. Manual distro checks are separate from the
 release workflow.
 
 ### Nix

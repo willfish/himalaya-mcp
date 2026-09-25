@@ -4,27 +4,41 @@ set -eu
 
 fail() { printf 'himalaya-mcp: %s\n' "$*" >&2; exit 1; }
 fetch() { curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$1" -o "$2"; }
+check_hash() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -
+  else shasum -a 256 -c -; fi
+}
 
 main() {
   case "${1:-}" in
     '') ;;
-    --help) printf 'Usage: curl -fsSL <release>/install | sh\nOverrides: PREFIX, HIMALAYA_MCP_VERSION\nSupported: Linux x86_64 and aarch64\n'; exit 0 ;;
+    --help) printf 'Usage: curl -fsSL <release>/install | sh\nOverrides: PREFIX, HIMALAYA_MCP_VERSION\nSupported: Linux and macOS 13+, x86_64 and aarch64\n'; exit 0 ;;
     *) fail 'Use PREFIX and HIMALAYA_MCP_VERSION environment variables, or --help.' ;;
   esac
-  for tool in curl tar sha256sum uname id mktemp mkdir cp mv chmod rm awk grep dirname; do
+  for tool in curl tar uname id mktemp mkdir cp mv chmod rm awk grep dirname; do
     command -v "$tool" >/dev/null 2>&1 || fail "Required command missing: $tool"
   done
-  [ "$(uname -s)" = Linux ] || fail 'Prebuilt releases support Linux only; use the source/Nix instructions for other systems.'
+  command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'Required command missing: sha256sum or shasum'
+  case "$(uname -s)" in
+    Linux) platform=linux ;;
+    Darwin)
+      platform=darwin
+      major=$(sw_vers -productVersion | awk -F. '{print $1}')
+      [ "$major" -ge 13 ] || fail 'macOS 13 or newer is required.' ;;
+    *) fail 'Prebuilt releases support Linux and macOS only.' ;;
+  esac
   case "$(uname -m)" in
-    x86_64|amd64)
-      arch=x86_64
-      himalaya_hash=e04e6382e3e664ef34b01afa1a2216113194a2975d2859727647b22d9b36d4e4 ;;
-    aarch64|arm64)
-      arch=aarch64
-      himalaya_hash=643020b220991fac67726f3be11310fcf806e757feadbbab3efbddd713597872 ;;
+    x86_64|amd64) arch=x86_64 ;;
+    aarch64|arm64) arch=aarch64 ;;
     *) fail "Unsupported architecture: $(uname -m)" ;;
   esac
-  version=${HIMALAYA_MCP_VERSION:-v0.2.1}
+  case "$platform-$arch" in
+    linux-x86_64) himalaya_hash=e04e6382e3e664ef34b01afa1a2216113194a2975d2859727647b22d9b36d4e4 ;;
+    linux-aarch64) himalaya_hash=643020b220991fac67726f3be11310fcf806e757feadbbab3efbddd713597872 ;;
+    darwin-x86_64) himalaya_hash=4dd2aef8e9e0bbf20bd4aaa2db9b634377c0341070c52c0e182fd615324a6378 ;;
+    darwin-aarch64) himalaya_hash=f70230f4d92b5bdc505e0b482db32d587d28252173a34227d6167c109bfa64f7 ;;
+  esac
+  version=${HIMALAYA_MCP_VERSION:-v0.3.0}
   case "$version" in *[!v0-9.]*|'') fail 'Invalid release version.' ;; esac
   printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail 'Version must be vMAJOR.MINOR.PATCH.'
   if [ -n "${PREFIX:-}" ]; then prefix=$PREFIX
@@ -39,21 +53,21 @@ main() {
   launcher=''
   trap 'rm -rf "$tmp"; if [ -n "$stage" ]; then rm -rf "$stage"; fi; if [ -n "$launcher" ]; then rm -f "$launcher"; fi' EXIT
   trap 'exit 1' HUP INT TERM
-  archive="himalaya-mcp-$version-linux-$arch.tar.gz"
+  archive="himalaya-mcp-$version-$platform-$arch.tar.gz"
   release="https://github.com/willfish/himalaya-mcp/releases/download/$version"
-  printf 'Downloading %s for Linux %s...\n' "$version" "$arch"
+  printf 'Downloading %s for %s %s...\n' "$version" "$platform" "$arch"
   fetch "$release/$archive" "$tmp/$archive"
   fetch "$release/SHA256SUMS" "$tmp/SHA256SUMS"
   expected=$(awk -v name="$archive" '$2 == name {print $1}' "$tmp/SHA256SUMS")
   [ "${#expected}" = 64 ] || fail 'Missing or duplicate archive checksum.'
   case "$expected" in *[!0-9a-f]*) fail 'Invalid archive checksum.' ;; esac
-  (cd "$tmp" && printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -) || fail 'MCP checksum verification failed.'
+  (cd "$tmp" && printf '%s  %s\n' "$expected" "$archive" | check_hash) || fail 'MCP checksum verification failed.'
   mkdir "$tmp/package"
   # Archive builder UIDs are not installation owners, including in rootless containers.
   tar --no-same-owner -xzf "$tmp/$archive" -C "$tmp/package"
   [ -x "$tmp/package/himalaya-mcp" ] && [ -f "$tmp/package/zoneinfo/UTC" ] || fail 'Incomplete MCP archive.'
-  fetch "https://github.com/pimalaya/himalaya/releases/download/v1.2.0/himalaya.$arch-linux.tgz" "$tmp/himalaya.tgz"
-  (cd "$tmp" && printf '%s  himalaya.tgz\n' "$himalaya_hash" | sha256sum -c -) || fail 'Himalaya checksum verification failed.'
+  fetch "https://github.com/pimalaya/himalaya/releases/download/v1.2.0/himalaya.$arch-$platform.tgz" "$tmp/himalaya.tgz"
+  (cd "$tmp" && printf '%s  himalaya.tgz\n' "$himalaya_hash" | check_hash) || fail 'Himalaya checksum verification failed.'
   tar --no-same-owner -xzf "$tmp/himalaya.tgz" -C "$tmp/package" himalaya
   "$tmp/package/himalaya" --version
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | "$tmp/package/himalaya-mcp" > "$tmp/probe.json"

@@ -1,8 +1,9 @@
-# Manual Linux installation checks
+# Manual installation checks
 
-Use disposable containers, not host packages or real mail credentials. This
-walkthrough targets x86_64 Linux and needs Docker, curl, tar and sha256sum on the
-host. It is a manual recipe, not CI or an installation script.
+Use disposable containers or an isolated temporary home, not real mail credentials.
+The Linux walkthrough targets x86_64 and needs Docker, curl, tar and sha256sum on
+the host. macOS must be checked natively, as described below. These are manual
+recipes, not a CI platform matrix.
 
 ## Check the public curl installer
 
@@ -147,3 +148,32 @@ Exit the container shell, then remove only this test container and download:
 docker rm -f himalaya-check
 rm -rf "$scratch"
 ```
+
+## Native macOS curl check
+
+Run on an actual Intel or Apple Silicon Mac with macOS 13+. Do not infer macOS
+compatibility from Linux containers. No compiler or Homebrew is needed to install.
+Use a subshell and temporary home so the check cannot replace an existing launcher:
+
+```sh
+(
+  set -eu
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  export HOME="$scratch/test home"
+  export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
+  export XDG_CACHE_HOME="$HOME/.cache" XDG_DATA_HOME="$HOME/.local/share"
+  export PATH=/usr/bin:/bin
+  mkdir -p "$HOME"
+  curl -fsSL https://github.com/willfish/himalaya-mcp/releases/latest/download/install | sh
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+    | "$HOME/.local/bin/himalaya-mcp"
+)
+```
+
+Check the selected Darwin architecture, checksum success, initialization response
+and paths containing spaces. Where `sha256sum` is absent, installation must use the
+built-in `shasum`. Use an isolated Maildir account for real CLI checks, not the
+machine's existing account. Calendar previews should follow the Mac's timezone,
+with `HIMALAYA_TIMEZONE` still taking precedence. Repeat with a custom `PREFIX`.
+Do not disable Gatekeeper to make a failed check pass.

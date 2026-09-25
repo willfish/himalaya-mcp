@@ -1,5 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
 /* Darwin exposes mkdtemp through its extended unistd.h declarations. */
 #define _DARWIN_C_SOURCE
 #endif
