@@ -60,7 +60,7 @@ private CLI and timezone paths; `HIMALAYA_BINARY` and `HIMALAYA_ZONEINFO_DIR` ca
 override them. It reads your normal Himalaya account configuration. After account
 setup, run `<prefix>/bin/himalaya-mcp doctor`.
 
-To pin a release, use `/releases/download/v0.2.0/install` instead of
+To pin a release, use `/releases/download/v0.2.1/install` instead of
 `/releases/latest/download/install`. You can also download `install`, inspect it,
 then run `sh install`. Archive checksums detect corruption against the GitHub
 release manifest; they are not an independent signature or a substitute for

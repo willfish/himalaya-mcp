@@ -24,7 +24,7 @@ main() {
       himalaya_hash=643020b220991fac67726f3be11310fcf806e757feadbbab3efbddd713597872 ;;
     *) fail "Unsupported architecture: $(uname -m)" ;;
   esac
-  version=${HIMALAYA_MCP_VERSION:-v0.2.0}
+  version=${HIMALAYA_MCP_VERSION:-v0.2.1}
   case "$version" in *[!v0-9.]*|'') fail 'Invalid release version.' ;; esac
   printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail 'Version must be vMAJOR.MINOR.PATCH.'
   if [ -n "${PREFIX:-}" ]; then prefix=$PREFIX
@@ -49,11 +49,12 @@ main() {
   case "$expected" in *[!0-9a-f]*) fail 'Invalid archive checksum.' ;; esac
   (cd "$tmp" && printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -) || fail 'MCP checksum verification failed.'
   mkdir "$tmp/package"
-  tar -xzf "$tmp/$archive" -C "$tmp/package"
+  # Archive builder UIDs are not installation owners, including in rootless containers.
+  tar --no-same-owner -xzf "$tmp/$archive" -C "$tmp/package"
   [ -x "$tmp/package/himalaya-mcp" ] && [ -f "$tmp/package/zoneinfo/UTC" ] || fail 'Incomplete MCP archive.'
   fetch "https://github.com/pimalaya/himalaya/releases/download/v1.2.0/himalaya.$arch-linux.tgz" "$tmp/himalaya.tgz"
   (cd "$tmp" && printf '%s  himalaya.tgz\n' "$himalaya_hash" | sha256sum -c -) || fail 'Himalaya checksum verification failed.'
-  tar -xzf "$tmp/himalaya.tgz" -C "$tmp/package" himalaya
+  tar --no-same-owner -xzf "$tmp/himalaya.tgz" -C "$tmp/package" himalaya
   "$tmp/package/himalaya" --version
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | "$tmp/package/himalaya-mcp" > "$tmp/probe.json"
   grep -q '"name":"himalaya-mcp"' "$tmp/probe.json" || fail 'MCP executable check failed.'

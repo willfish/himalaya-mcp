@@ -12,7 +12,7 @@
       packages = forEach (pkgs: {
         default = pkgs.stdenv.mkDerivation {
           pname = "himalaya-mcp";
-          version = "0.2.0";
+          version = "0.2.1";
           src = ./.;
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.cjson ];
