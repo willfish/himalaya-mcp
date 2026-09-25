@@ -45,6 +45,13 @@ static cJSON *rpc(FILE *to, FILE *from, const char *payload) {
   return msg;
 }
 
+static void expect_error(FILE *to, FILE *from, const char *payload, int code) {
+  cJSON *msg = rpc(to, from, payload);
+  cJSON *actual = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(msg,"error"),"code");
+  if (!cJSON_IsNumber(actual) || actual->valueint != code) fail("RPC error code");
+  cJSON_Delete(msg);
+}
+
 static int contains(const char *path, const char *needle) {
   FILE *f = fopen(path, "r");
   if (!f) return 0;
@@ -99,12 +106,46 @@ int main(int argc, char **argv) {
   cJSON *prompts = rpc(to, from, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"prompts/list\"}");
   cJSON *prompt_arr = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(prompts, "result"), "prompts");
   if (!cJSON_IsArray(prompt_arr) || cJSON_GetArraySize(prompt_arr) != 7) fail("prompt count");
+  for (int i = 0; i < 7; i++) {
+    const char *prompt_name = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(prompt_arr,i),"name")->valuestring;
+    char payload[1024];
+    snprintf(payload,sizeof payload,"{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"prompts/get\",\"params\":{\"name\":\"%s\",\"arguments\":{\"id\":\"123\",\"instructions\":\"Synthetic context\"}}}",prompt_name);
+    cJSON *prompt=rpc(to,from,payload);
+    char *printed=cJSON_PrintUnformatted(prompt);
+    if (!strstr(printed,"Synthetic context") || !strstr(printed,"123")) fail("prompt context");
+    free(printed); cJSON_Delete(prompt);
+  }
   cJSON_Delete(prompts);
 
   cJSON *resources = rpc(to, from, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"resources/list\"}");
   cJSON *resource_arr = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(resources, "result"), "resources");
-  if (!cJSON_IsArray(resource_arr) || cJSON_GetArraySize(resource_arr) != 3) fail("resource count");
+  if (!cJSON_IsArray(resource_arr) || cJSON_GetArraySize(resource_arr) != 2) fail("resource count");
   cJSON_Delete(resources);
+  cJSON *templates=rpc(to,from,"{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"resources/templates/list\"}");
+  cJSON *template_arr=cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(templates,"result"),"resourceTemplates");
+  if (cJSON_GetArraySize(template_arr)!=1) fail("resource templates");
+  cJSON_Delete(templates);
+  const char *uris[]={"email://inbox","email://folders","email://message/7"};
+  for (int i=0;i<3;i++) {
+    char payload[512]; snprintf(payload,sizeof payload,"{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"resources/read\",\"params\":{\"uri\":\"%s\"}}",uris[i]);
+    cJSON *resource=rpc(to,from,payload);
+    if (!cJSON_GetObjectItemCaseSensitive(resource,"result")) fail("resource read");
+    cJSON_Delete(resource);
+  }
+  expect_error(to,from,"{bad json",-32700);
+  expect_error(to,from,"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"ping\"}junk",-32700);
+  expect_error(to,from,"[]",-32600);
+  expect_error(to,from,"{\"id\":30,\"method\":\"ping\"}",-32600);
+  expect_error(to,from,"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"missing\"}",-32601);
+  expect_error(to,from,"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"prompts/get\",\"params\":{\"name\":\"missing\"}}",-32602);
+  expect_error(to,from,"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"resources/read\",\"params\":{\"uri\":\"email://missing\"}}",-32002);
+  expect_error(to,from,"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"read_email\",\"arguments\":{}}}",-32602);
+  expect_error(to,from,"{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"tools/call\",\"params\":{\"name\":\"send_email\",\"arguments\":{\"template\":\"x\",\"confirm\":\"true\"}}}",-32602);
+  /* A notification must neither execute the mutation nor emit a reply. */
+  fputs("{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"send_email\",\"arguments\":{\"template\":\"x\",\"confirm\":true}}}\n",to);
+  cJSON *pong=rpc(to,from,"{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\"}");
+  if (cJSON_GetObjectItemCaseSensitive(pong,"id")->valueint!=99 || contains(log,"template send")) fail("notification handling");
+  cJSON_Delete(pong);
 
   cJSON *emails = rpc(to, from,
                       "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"list_emails\",\"arguments\":{\"account\":\"gmail\"}}}");

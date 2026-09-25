@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +24,7 @@ static const char *folder_of(const cJSON *args) {
   return valid_folder(folder) ? folder : NULL;
 }
 
-static Result envelopes(const cJSON *args, const char *query, int page, int page_size) {
+static Result envelopes_page(const cJSON *args, const char *query, int page, int page_size, int *count_out) {
   const char *account = account_of(args);
   const char *folder = folder_of(args);
   if (!account || !folder) return result_err("invalid account or folder");
@@ -46,20 +47,21 @@ static Result envelopes(const cJSON *args, const char *query, int page, int page
   argv_add(&a, size_s);
   if (query && *query) {
     argv_add(&a, "--");
-    char *copy = strdup(query);
-    char *tok = strtok(copy, " \t");
-    while (tok) {
-      argv_add(&a, tok);
-      tok = strtok(NULL, " \t");
-    }
-    free(copy);
+    argv_add(&a, query);
   }
   Result raw = him_run(&a);
   if (raw.is_error) return raw;
-  int count = 0;
-  char *text = format_envelopes(raw.text, &count);
+  cJSON *rows = cJSON_Parse(raw.text);
+  if (!cJSON_IsArray(rows)) { cJSON_Delete(rows); result_free(raw); return result_err("invalid envelope response"); }
+  if (count_out) *count_out = cJSON_GetArraySize(rows);
+  cJSON_Delete(rows);
+  char *text = format_envelopes(raw.text, NULL);
   result_free(raw);
   return result_ok(text);
+}
+
+static Result envelopes(const cJSON *args, const char *query, int page, int page_size) {
+  return envelopes_page(args, query, page, page_size, NULL);
 }
 
 Result tool_list_emails(const cJSON *args) {
@@ -76,16 +78,13 @@ Result tool_search_emails(const cJSON *args) {
 Result tool_get_unread_count(const cJSON *args) {
   int total = 0;
   for (int page = 1; page <= 20; page++) {
-    Result page_text = envelopes(args, "not flag Seen", page, 100);
-    if (page_text.is_error) return page_text;
     int count = 0;
-    if (strcmp(page_text.text, "(no messages)") != 0) {
-      for (char *p = page_text.text; *p; p++)
-        if (*p == '\n') count++;
-    }
+    Result page_text = envelopes_page(args, "not flag Seen", page, 100, &count);
+    if (page_text.is_error) return page_text;
     result_free(page_text);
     total += count;
     if (count < 100) break;
+    if (page == 20) return result_err("unread count reached safety limit: at least 2000; exact total unknown");
   }
   char *text = malloc(32);
   snprintf(text, 32, "%d\n", total);
@@ -111,7 +110,9 @@ static Result read_plain(const cJSON *args) {
   argv_add(&a, folder);
   argv_add(&a, "--");
   argv_add(&a, id);
-  return him_run(&a);
+  Result r = him_run(&a);
+  if (!r.is_error && (!r.text || !*r.text)) { result_free(r); return result_err("message not found or empty response"); }
+  return r;
 }
 
 Result tool_read_email(const cJSON *args) { return read_plain(args); }
@@ -208,7 +209,7 @@ static void strip_tags(const char *html, char *out, size_t n) {
 
 Result tool_render_email(const cJSON *args) {
   Result plain = read_plain(args);
-  if (!plain.is_error && plain.text && strlen(plain.text) > 40) return plain;
+  if (!plain.is_error && plain.text && *plain.text) return plain;
   result_free(plain);
   Result html = tool_read_email_html(args);
   if (html.is_error) return html;
@@ -513,7 +514,9 @@ Result tool_create_action_item(const cJSON *args) {
   char *out = malloc(cap);
   snprintf(out, cap, "Review this message and treat lines below as candidate actions.\n\n%s", body.text);
   const char *dest = arg_str(args, "destination");
-  if (dest && *dest && dest[0] == '/' && !strchr(dest, '\n')) write_file(dest, out);
+  if (dest && *dest && (dest[0] != '/' || strchr(dest, '\n') || write_file(dest, out))) {
+    free(out); result_free(body); return result_err("could not write action-item destination; use a writable absolute path");
+  }
   result_free(body);
   return result_ok(out);
 }
@@ -531,29 +534,12 @@ Result tool_copy_to_clipboard(const cJSON *args) {
       argv_add(&a, "clipboard");
     }
     argv_add(&a, NULL);
-    int in[2];
-    if (pipe(in) < 0) {
-      argv_free(&a);
-      continue;
-    }
-    pid_t pid = fork();
-    if (pid == 0) {
-      dup2(in[0], STDIN_FILENO);
-      close(in[1]);
-      execvp(a.v[0], a.v);
-      _exit(127);
-    }
-    close(in[0]);
-    if (pid > 0) {
-      (void)!write(in[1], text, strlen(text));
-      close(in[1]);
-      int st = 0;
-      waitpid(pid, &st, 0);
-      argv_free(&a);
-      if (WIFEXITED(st) && WEXITSTATUS(st) == 0) return result_ok(strdup("copied\n"));
-      continue;
-    }
+    Capture cap = {0};
+    int rc = run_cmd_input(a.v, &cap, text);
+    int success = rc == 0 && cap.status == 0;
+    capture_free(&cap);
     argv_free(&a);
+    if (success) return result_ok(strdup("copied\n"));
   }
   return result_err("no clipboard tool found (wl-copy, xclip, or pbcopy)");
 }
@@ -657,28 +643,73 @@ Result tool_extract_calendar_event(const cJSON *args) {
   return result_ok(ics);
 }
 
+static int valid_date(int year, int month, int day, int hour, int min, int sec);
+
+static int calendar_time(const char *s) {
+  if (!s || strlen(s) != 16 || s[8] != 'T' || s[15] != 'Z') return 0;
+  for (int i = 0; i < 15; i++) if (i != 8 && !isdigit((unsigned char)s[i])) return 0;
+  int y, mo, d, h, mi, sec;
+  return sscanf(s, "%4d%2d%2dT%2d%2d%2dZ", &y,&mo,&d,&h,&mi,&sec) == 6 && valid_date(y,mo,d,h,mi,sec);
+}
+
+static char *calendar_escape(const char *s) {
+  if (!s) s = "";
+  char *out = malloc(strlen(s) * 2 + 1), *w = out;
+  for (; *s; s++) {
+    if (*s == '\r') continue;
+    if (*s == '\n') { *w++ = '\\'; *w++ = 'n'; }
+    else { if (strchr("\\,;", *s)) *w++ = '\\'; *w++ = *s; }
+  }
+  *w = 0;
+  return out;
+}
+
 Result tool_create_calendar_event(const cJSON *args) {
-  const char *summary = arg_str(args, "summary");
-  const char *start = arg_str(args, "dtstart");
-  const char *end = arg_str(args, "dtend");
-  if (!summary || !start || !end) return result_err("summary, dtstart, and dtend are required");
-  char *ics = malloc(strlen(summary) + strlen(start) + strlen(end) + 256);
-  if (!ics) return result_err("out of memory");
-  sprintf(ics,
-          "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:%s\nDTSTART:%s\nDTEND:%s\nEND:VEVENT\nEND:VCALENDAR\n",
-          summary, start, end);
+  const char *summary = arg_str(args, "summary"), *start = arg_str(args, "dtstart"), *end = arg_str(args, "dtend");
+  if (!summary || !*summary || !calendar_time(start) || !calendar_time(end) || strcmp(start, end) >= 0)
+    return result_err("summary and increasing UTC timestamps YYYYMMDDTHHMMSSZ are required");
+  char stamp[32];
+  time_t now = time(NULL);
+  struct tm tm;
+  gmtime_r(&now, &tm);
+  strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", &tm);
+  char *s = calendar_escape(summary), *location = calendar_escape(arg_str(args, "location")), *description = calendar_escape(arg_str(args, "description"));
+  static unsigned sequence;
+  size_t size = strlen(s) + strlen(location) + strlen(description) + 512;
+  char *raw = malloc(size);
+  snprintf(raw, size, "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//himalaya-mcp//EN\r\nBEGIN:VEVENT\r\nUID:%s-%ld-%u@himalaya-mcp\r\nDTSTAMP:%s\r\nSUMMARY:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nLOCATION:%s\r\nDESCRIPTION:%s\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", stamp, (long)getpid(), ++sequence, stamp, s, start, end, location, description);
+  free(s); free(location); free(description);
+  /* Fold at 75 octets, without splitting UTF-8 continuation bytes. */
+  char *ics = malloc(strlen(raw) * 2 + 1), *w = ics;
+  size_t column = 0;
+  for (const unsigned char *p = (unsigned char *)raw; *p; p++) {
+    if (column >= 71 && (*p & 0xc0) != 0x80 && *p != '\r' && *p != '\n') { memcpy(w, "\r\n ", 3); w += 3; column = 1; }
+    *w++ = (char)*p;
+    if (*p == '\n') column = 0; else column++;
+  }
+  *w = 0;
+  free(raw);
   if (!arg_bool(args, "confirm")) {
     char *preview = malloc(strlen(ics) + 96);
     sprintf(preview, "PREVIEW: calendar event not created. Call again with confirm=true.\n\n%s", ics);
     free(ics);
     return result_ok(preview);
   }
-  char *path = state_file("event.ics");
-  write_file(path, ics);
-  char *text = malloc(strlen(path) + 64);
+  char *dir = state_file("");
+  if (mkdir_p(dir)) { free(dir); free(ics); return result_err("could not create calendar directory"); }
+  free(dir);
+  dir = state_file("event-XXXXXX");
+  if (!mkdtemp(dir)) { free(dir); free(ics); return result_err("could not create event directory"); }
+  char *path = malloc(strlen(dir) + 12);
+  if (!path) { rmdir(dir); free(dir); free(ics); return result_err("out of memory"); }
+  sprintf(path, "%s/event.ics", dir);
+  int failed = write_file(path, ics);
+  free(ics);
+  if (failed) { rmdir(dir); free(dir); free(path); return result_err("could not write calendar event"); }
+  free(dir);
+  char *text = malloc(strlen(path) + 16);
   sprintf(text, "wrote %s\n", path);
   free(path);
-  free(ics);
   return result_ok(text);
 }
 
@@ -691,11 +722,13 @@ Result tool_list_threads(const cJSON *args) {
 Result tool_read_thread(const cJSON *args) {
   const char *thread_id = arg_str(args, "thread_id");
   if (!thread_id || !*thread_id || strchr(thread_id, '\n')) return result_err("thread_id is required");
-  char query[512];
-  snprintf(query, sizeof query, "subject %s", thread_id);
+  if (strpbrk(thread_id, "\r\"\\")) return result_err("thread subject cannot contain quotes, backslashes or line breaks");
+  char *query = malloc(strlen(thread_id) + 12);
+  sprintf(query, "subject \"%s\"", thread_id);
   Result listed = envelopes(args, query, 1, 20);
+  free(query);
   if (listed.is_error) return listed;
-  char *out = malloc(strlen(listed.text) + 64);
+  char *out = malloc(strlen(listed.text) + strlen(thread_id) + 16);
   sprintf(out, "Thread %s\n%s", thread_id, listed.text);
   result_free(listed);
   return result_ok(out);
@@ -707,6 +740,26 @@ static void iso_now(char *dst, size_t n, time_t when) {
   strftime(dst, n, "%Y-%m-%dT%H:%M:%S", &tm);
 }
 
+static int valid_date(int year, int month, int day, int hour, int min, int sec) {
+  const int days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  if (year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1 || hour < 0 || hour > 23 || min < 0 || min > 59 || sec < 0 || sec > 59) return 0;
+  int leap = month == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+  return day <= days[month - 1] + leap;
+}
+
+static int valid_iso(const char *text) {
+  int y, mo, d, h, mi, s, pos = 0;
+  if (sscanf(text, "%4d-%2d-%2dT%2d:%2d:%2d%n", &y, &mo, &d, &h, &mi, &s, &pos) != 6 || pos != 19 || !valid_date(y,mo,d,h,mi,s)) return 0;
+  char canonical[32];
+  snprintf(canonical, sizeof canonical, "%04d-%02d-%02dT%02d:%02d:%02d", y,mo,d,h,mi,s);
+  if (strncmp(text, canonical, 19)) return 0;
+  const char *zone = text + 19;
+  if (!*zone || !strcmp(zone, "Z")) return 1;
+  if (strlen(zone) != 6 || zone[3] != ':' || !isdigit((unsigned char)zone[1]) || !isdigit((unsigned char)zone[2]) || !isdigit((unsigned char)zone[4]) || !isdigit((unsigned char)zone[5])) return 0;
+  int zh, zm, used = 0;
+  return (*zone == '+' || *zone == '-') && sscanf(zone + 1, "%2d:%2d%n", &zh, &zm, &used) == 2 && used == 5 && strlen(zone) == 6 && zh >= 0 && zh <= 23 && zm >= 0 && zm <= 59;
+}
+
 static int parse_until(const char *text, char *dst, size_t n) {
   time_t now = time(NULL);
   if (!text || !*text) return -1;
@@ -715,13 +768,26 @@ static int parse_until(const char *text, char *dst, size_t n) {
     return 0;
   }
   if (text[strlen(text) - 1] == 'h' || text[strlen(text) - 1] == 'd') {
-    int num = atoi(text);
-    if (num <= 0) return -1;
-    iso_now(dst, n, now + (text[strlen(text) - 1] == 'h' ? num * 3600 : num * 86400));
+    char *end;
+    errno = 0;
+    long num = strtol(text, &end, 10);
+    if (errno || num <= 0 || num > 36500 || end != text + strlen(text) - 1) return -1;
+    iso_now(dst, n, now + (text[strlen(text) - 1] == 'h' ? num * 3600L : num * 86400L));
     return 0;
   }
+  if (!valid_iso(text) || strlen(text) >= n) return -1;
   snprintf(dst, n, "%s", text);
   return 0;
+}
+
+static cJSON *load_records(const char *path) {
+  errno = 0;
+  char *existing = read_file(path, 1024 * 1024);
+  if (!existing) return errno == ENOENT ? cJSON_CreateArray() : NULL;
+  cJSON *arr = cJSON_Parse(existing);
+  free(existing);
+  if (!cJSON_IsArray(arr)) { cJSON_Delete(arr); return NULL; }
+  return arr;
 }
 
 Result tool_snooze_email(const cJSON *args) {
@@ -733,12 +799,8 @@ Result tool_snooze_email(const cJSON *args) {
   char until[64];
   if (parse_until(until_in, until, sizeof until) < 0) return result_err("could not parse snoozeUntil");
   char *path = state_file("snooze.json");
-  char *existing = read_file(path, 1024 * 1024);
-  cJSON *arr = existing ? cJSON_Parse(existing) : cJSON_CreateArray();
-  if (!cJSON_IsArray(arr)) {
-    cJSON_Delete(arr);
-    arr = cJSON_CreateArray();
-  }
+  cJSON *arr = load_records(path);
+  if (!arr) { free(path); return result_err("cannot read snooze records; existing state left unchanged"); }
   cJSON *item = cJSON_CreateObject();
   cJSON_AddStringToObject(item, "id", id);
   cJSON_AddStringToObject(item, "folder", folder);
@@ -747,48 +809,51 @@ Result tool_snooze_email(const cJSON *args) {
   cJSON_AddStringToObject(item, "snoozeUntil", until);
   cJSON_AddItemToArray(arr, item);
   char *printed = cJSON_Print(arr);
-  write_file(path, printed);
-  char *text = malloc(128);
-  snprintf(text, 128, "snoozed %s until %s\n", id, until);
+  int failed = write_file(path, printed);
+  char *text = malloc(strlen(id) + strlen(until) + 32);
+  sprintf(text, "snoozed %s until %s\n", id, until);
   free(printed);
-  free(existing);
   free(path);
   cJSON_Delete(arr);
+  if (failed) { free(text); return result_err("could not write snooze records"); }
   return result_ok(text);
 }
 
 Result tool_list_snoozed_emails(const cJSON *args) {
   (void)args;
   char *path = state_file("snooze.json");
-  char *existing = read_file(path, 1024 * 1024);
+  cJSON *records = load_records(path);
   free(path);
-  if (!existing) return result_ok(strdup("(none)\n"));
-  return result_ok(existing);
+  if (!records) return result_err("cannot read snooze records");
+  char *printed = cJSON_Print(records);
+  cJSON_Delete(records);
+  return result_ok(printed);
 }
 
 Result tool_create_reminder(const cJSON *args) {
   const char *title = arg_str(args, "title");
-  if (!title || strchr(title, '\n')) return result_err("title is required");
+  if (!title || !*title || strpbrk(title, "\r\n")) return result_err("title is required");
+  const char *due = arg_str(args, "dueDate");
+  if (due && !valid_iso(due)) return result_err("dueDate must be an ISO timestamp");
+  int priority = arg_int(args, "priority", 0);
+  if (priority < 0 || priority > 9) return result_err("priority must be between 0 and 9");
   char *path = state_file("reminders.json");
-  char *existing = read_file(path, 1024 * 1024);
-  cJSON *arr = existing ? cJSON_Parse(existing) : cJSON_CreateArray();
-  if (!cJSON_IsArray(arr)) {
-    cJSON_Delete(arr);
-    arr = cJSON_CreateArray();
-  }
+  cJSON *arr = load_records(path);
+  if (!arr) { free(path); return result_err("cannot read reminder records; existing state left unchanged"); }
   cJSON *item = cJSON_CreateObject();
   cJSON_AddStringToObject(item, "title", title);
   if (arg_str(args, "notes")) cJSON_AddStringToObject(item, "notes", arg_str(args, "notes"));
-  if (arg_str(args, "dueDate")) cJSON_AddStringToObject(item, "dueDate", arg_str(args, "dueDate"));
+  if (due) cJSON_AddStringToObject(item, "dueDate", due);
+  cJSON_AddNumberToObject(item, "priority", priority);
   cJSON_AddItemToArray(arr, item);
   char *printed = cJSON_Print(arr);
-  write_file(path, printed);
+  int failed = write_file(path, printed);
   char *text = malloc(strlen(title) + 32);
   sprintf(text, "reminder stored: %s\n", title);
   free(printed);
-  free(existing);
   free(path);
   cJSON_Delete(arr);
+  if (failed) { free(text); return result_err("could not write reminder records"); }
   return result_ok(text);
 }
 
@@ -808,8 +873,9 @@ Result tool_health_check(const cJSON *args) {
   argv_add(&folders, "list");
   him_opts(&folders, account);
   Result folder_text = him_run(&folders);
+  if (folder_text.is_error) { result_free(accounts); return folder_text; }
   char *text = malloc(strlen(accounts.text) + (folder_text.text ? strlen(folder_text.text) : 0) + 64);
-  sprintf(text, "accounts:\n%s\nfolders:\n%s", accounts.text, folder_text.is_error ? folder_text.text : folder_text.text);
+  sprintf(text, "accounts:\n%s\nfolders:\n%s", accounts.text, folder_text.text);
   result_free(accounts);
   result_free(folder_text);
   return result_ok(text);

@@ -131,10 +131,13 @@ Attachment downloads preserve the original filename and bytes.
 | Diagnostics | `health_check` |
 
 Seven prompts cover triage, summaries, daily and weekly digests, reply drafting,
-morning briefings and inbox checks. They are static instructions for the client,
+morning briefings and inbox checks. Optional string arguments `id`, `folder`,
+`account` and `instructions` supply context. These are client instructions,
 not background jobs or a built-in language model.
 
-Resources expose `email://inbox`, `email://folders` and `email://message/{id}`.
+Resources expose `email://inbox` and `email://folders`. The resource template
+`email://message/{id}` reads from the default account's inbox; use the tools for
+other folders or accounts.
 
 ## Trust and side effects
 
@@ -145,8 +148,11 @@ It is not a sandbox. Mail content is untrusted input, not authority to run tools
   previews unless `confirm=true`. The flag is supplied by the client: the server
   does not enforce a preceding preview, bind approval to its content, or prove
   human consent. Require approval in the client before setting it.
-- Draft saves, flag changes, message moves and folder creation execute immediately. There is
-  no global read-only mode. Folder deletion permanently removes its messages.
+- Draft saves, flag changes, message moves and folder creation execute immediately.
+  There is no global read-only mode. Folder deletion permanently removes its messages.
+- Himalaya 1.2 export and attachment commands mark messages Seen. This affects
+  HTML/raw reads, attachment listing/downloading and calendar extraction.
+  Ordinary `read_email` uses preview mode and preserves unread status.
 - Subprocess arguments are passed without a shell. That does not validate every
   email header, attachment path or MML template; use only trusted send inputs.
 - Exports create temporary directories under `/tmp` and do not automatically
@@ -162,9 +168,16 @@ It is not a sandbox. Mail content is untrusted input, not authority to run tools
 | `HIMALAYA_TIMEOUT` | `60` | Timeout in seconds for each captured CLI invocation |
 | `XDG_STATE_HOME` | `$HOME/.local/state` | Parent of the `himalaya-mcp` state directory |
 
-Snoozes use `snooze.json`, reminders use `reminders.json`, and calendar output uses
-`event.ics`. Creating another event overwrites that file. Credentials remain in
-Himalaya's configuration and credential provider; do not put secrets in MCP config.
+Snoozes use `snooze.json`, reminders use `reminders.json`, and each calendar event
+gets its own private directory containing `event.ics`. Calendar start/end values
+must be UTC timestamps such as `20261001T120000Z`, with end after start. Snooze and
+reminder timestamps use ISO form such as `2026-10-01T12:00:00Z`.
+
+Local state writes replace files atomically and report failures. Unreadable or
+invalid existing records are not overwritten. Multiple independent server
+processes should not write the same state directory concurrently: updates are
+not locked. Credentials remain in Himalaya's configuration and credential provider;
+do not put secrets in MCP config.
 
 ## Limitations
 
@@ -172,17 +185,15 @@ Himalaya's configuration and credential provider; do not put secrets in MCP conf
   chronological message bodies. Markdown export includes only an ID header,
   not the full upstream metadata. Action-item extraction is left to the client.
 - HTML rendering is basic tag stripping, not a Markdown converter or sanitizer.
-  Calendar extraction returns raw ICS; event creation is a minimal file writer,
-  not a validated calendar implementation.
-- Unread counting stops after 20 pages of 100 messages. Starred listing is paged,
-  and search splits queries on whitespace. Do not assume complete counts or
-  preservation of quoted multi-word search values.
+  Calendar extraction returns raw ICS; event creation writes a single event,
+  without recurrence, attendees or calendar-service integration.
+- Unread counting stops after 20 pages of 100 messages and returns an error with
+  a lower bound rather than a misleading exact count. Starred listing returns
+  only its first page. Search forwards the query verbatim to Himalaya.
 - Snoozing records local entries but does not hide mail or schedule its return.
-  Reminder priority is not applied. Some local writes do not report errors, and
-  `health_check` can return success despite a folder lookup failure.
-- Protocol error handling and argument validation remain incomplete. Prompt
-  arguments are not substituted, and the message resource template is currently
-  listed as a resource rather than through `resources/templates/list`.
+  Reminder priority is stored, not acted upon by a scheduler.
+- Text exports have size limits and fail rather than returning truncated data.
+  Downloaded attachment files are not subject to those text limits.
 
 ## Development
 
@@ -194,7 +205,10 @@ make clean
 `make test` builds a C protocol driver that launches the server with a fake
 Himalaya executable. The mail regression suite also checks template decoding,
 stdin-based sends, header validation, attachment paths, binary preservation and
-saving a draft without sending. These checks do not exercise every advertised
-capability or prove end-to-end mail delivery.
+saving a draft without sending. The capability suite exercises the remaining tool
+handlers, local persistence, calendar fields, failure paths and clipboard helpers
+without touching the desktop clipboard. Protocol checks cover all prompts,
+resources/templates, argument types, malformed requests and notification handling.
+These isolated checks do not prove end-to-end delivery or desktop integration.
 
-`nix build` also runs this check. There is no Python test dependency.
+`nix build` runs all three suites. There is no Python test dependency.

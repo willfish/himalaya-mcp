@@ -16,9 +16,13 @@ protocol_test: tests/protocol_test.c
 mail_test: tests/mail_test.c src/util.c src/tools.c src/common.h src/tools.h
 	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -Isrc -o $@ tests/mail_test.c src/util.c src/tools.c $(CJSON_LIBS)
 
-test: himalaya-mcp protocol_test mail_test
+capabilities_test: tests/capabilities_test.c src/util.c src/tools.c src/common.h src/tools.h
+	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -Isrc -o $@ tests/capabilities_test.c src/util.c src/tools.c $(CJSON_LIBS)
+
+test: himalaya-mcp protocol_test mail_test capabilities_test
 	./protocol_test ./himalaya-mcp
 	./mail_test
+	./capabilities_test
 
 clean:
-	rm -f himalaya-mcp protocol_test mail_test
+	rm -f himalaya-mcp protocol_test mail_test capabilities_test

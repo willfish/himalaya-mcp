@@ -129,31 +129,38 @@ int run_cmd_input(char *const argv[], Capture *cap, const char *input) {
   cap->out = calloc(1, 1);
   cap->err = calloc(1, 1);
   size_t ol = 0, oc = 1, el = 0, ec = 1;
-  int out_open = 1, err_open = 1;
+  int out_open = 1, err_open = 1, child_done = 0, st = 0, read_failed = 0;
   struct timespec start;
   clock_gettime(CLOCK_MONOTONIC, &start);
   const int limit = timeout_sec();
-  while (out_open || err_open) {
+  while (out_open || err_open || !child_done) {
+    if (!child_done) {
+      pid_t waited = waitpid(pid, &st, WNOHANG);
+      if (waited == pid) child_done = 1;
+      else if (waited < 0 && errno != EINTR) { close(outp[0]); close(errp[0]); return -1; }
+    }
+    if (child_done && !out_open && !err_open) break;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     int elapsed = (int)(now.tv_sec - start.tv_sec);
     if (elapsed >= limit) {
       kill(-pid, SIGKILL);
-      waitpid(pid, &cap->status, 0);
+      if (!child_done) waitpid(pid, &cap->status, 0);
       cap->status = -1;
       close(outp[0]);
       close(errp[0]);
       return -1;
     }
     struct pollfd fds[2] = {
-        {outp[0], POLLIN, 0},
-        {errp[0], POLLIN, 0},
+        {out_open ? outp[0] : -1, POLLIN, 0},
+        {err_open ? errp[0] : -1, POLLIN, 0},
     };
     poll(fds, 2, 200);
     if (out_open) {
       int rc = append_fd(&cap->out, &ol, &oc, outp[0], 8 * 1024 * 1024);
       if (rc == 1) out_open = 0;
       if (rc < 0) {
+        read_failed = 1;
         kill(-pid, SIGKILL);
         break;
       }
@@ -162,6 +169,7 @@ int run_cmd_input(char *const argv[], Capture *cap, const char *input) {
       int rc = append_fd(&cap->err, &el, &ec, errp[0], 1024 * 1024);
       if (rc == 1) err_open = 0;
       if (rc < 0) {
+        read_failed = 1;
         kill(-pid, SIGKILL);
         break;
       }
@@ -169,10 +177,9 @@ int run_cmd_input(char *const argv[], Capture *cap, const char *input) {
   }
   close(outp[0]);
   close(errp[0]);
-  int st = 0;
-  if (waitpid(pid, &st, 0) < 0) return -1;
+  if (!child_done && waitpid(pid, &st, 0) < 0) return -1;
   cap->status = WIFEXITED(st) ? WEXITSTATUS(st) : 1;
-  return 0;
+  return read_failed ? -1 : 0;
 }
 
 const char *arg_str(const cJSON *args, const char *key) {
@@ -367,7 +374,9 @@ char *read_file(const char *path, size_t max_bytes) {
   if (!f) return NULL;
   char *buf = malloc(max_bytes + 1);
   size_t n = fread(buf, 1, max_bytes, f);
+  int failed = ferror(f) || (n == max_bytes && fgetc(f) != EOF);
   fclose(f);
+  if (failed) { free(buf); errno = EFBIG; return NULL; }
   buf[n] = 0;
   return buf;
 }
@@ -375,9 +384,11 @@ char *read_file(const char *path, size_t max_bytes) {
 char *state_file(const char *name) {
   const char *base = getenv("XDG_STATE_HOME");
   const char *home = getenv("HOME");
-  char *path = malloc(512);
-  if (base && *base) snprintf(path, 512, "%s/himalaya-mcp/%s", base, name);
-  else snprintf(path, 512, "%s/.local/state/himalaya-mcp/%s", home && *home ? home : "/tmp", name);
+  const char *root = base && *base ? base : (home && *home ? home : "/tmp");
+  size_t size = strlen(root) + strlen(name) + 40;
+  char *path = malloc(size);
+  if (base && *base) snprintf(path, size, "%s/himalaya-mcp/%s", root, name);
+  else snprintf(path, size, "%s/.local/state/himalaya-mcp/%s", root, name);
   return path;
 }
 
@@ -408,9 +419,18 @@ int write_file(const char *path, const char *text) {
     }
   }
   free(dir);
-  FILE *f = fopen(path, "w");
-  if (!f) return -1;
-  fputs(text, f);
-  fclose(f);
-  return 0;
+  char *tmp = malloc(strlen(path) + 12);
+  if (!tmp) return -1;
+  sprintf(tmp, "%s.XXXXXX", path);
+  int fd = mkstemp(tmp);
+  if (fd < 0) { free(tmp); return -1; }
+  FILE *f = fdopen(fd, "w");
+  if (!f) { close(fd); unlink(tmp); free(tmp); return -1; }
+  int failed = fputs(text, f) == EOF;
+  if (fflush(f) || fsync(fd)) failed = 1;
+  if (fclose(f)) failed = 1;
+  if (!failed && rename(tmp, path)) failed = 1;
+  if (failed) unlink(tmp);
+  free(tmp);
+  return failed ? -1 : 0;
 }

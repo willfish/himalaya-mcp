@@ -20,7 +20,7 @@ static const Tool tools[] = {
     {"search_emails", "Search envelopes with himalaya filter syntax. Put and/or between conditions.",
      "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"page\":{\"type\":\"integer\"},\"page_size\":{\"type\":\"integer\"},\"account\":{\"type\":\"string\"}},\"required\":[\"query\"]}",
      tool_search_emails},
-    {"get_unread_count", "Count unread messages in a folder.",
+    {"get_unread_count", "Count unread messages in a folder. Returns an error rather than an exact count if the 2000-message safety limit is reached.",
      "{\"type\":\"object\",\"properties\":{\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}}}",
      tool_get_unread_count},
     {"list_starred", "List flagged messages.",
@@ -29,13 +29,13 @@ static const Tool tools[] = {
     {"read_email", "Read a message as text without marking it seen.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
      tool_read_email},
-    {"read_email_html", "Read the HTML part of a message.",
+    {"read_email_html", "Read the HTML part of a message. Himalaya export marks it Seen.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
      tool_read_email_html},
-    {"read_email_raw", "Read the raw MIME source of a message.",
+    {"read_email_raw", "Read the raw MIME source of a message. Himalaya export marks it Seen.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
      tool_read_email_raw},
-    {"render_email", "Read a message as plain text, stripping HTML when needed.",
+    {"render_email", "Read Himalaya's human-readable message, which may include attachment MML. Falls back to basic HTML tag stripping, not browser rendering.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
      tool_render_email},
     {"flag_email", "Add or remove flags: Seen, Flagged, Answered, Deleted, Draft.",
@@ -73,30 +73,30 @@ static const Tool tools[] = {
     {"copy_to_clipboard", "Copy text with wl-copy, xclip, or pbcopy.",
      "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}",
      tool_copy_to_clipboard},
-    {"list_attachments", "List attachment filenames and sizes. Body parts are omitted.",
+    {"list_attachments", "Download and list attachment filenames and sizes. Body parts are omitted. Marks the message Seen.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
      tool_list_attachments},
-    {"download_attachment", "Download one attachment and return its path.",
+    {"download_attachment", "Download one attachment and return its private temporary path. Marks the message Seen; caller removes downloaded files when finished.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"filename\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\",\"filename\"]}",
      tool_download_attachment},
-    {"extract_calendar_event", "Return the first ICS attachment from a message.",
+    {"extract_calendar_event", "Return the first ICS attachment from a message. Marks the message Seen.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
      tool_extract_calendar_event},
-    {"create_calendar_event", "Write an ICS event. Requires confirm=true.",
+    {"create_calendar_event", "Write a new local ICS file, not a calendar-service entry. UTC dates must be YYYYMMDDTHHMMSSZ with end after start. Requires confirm=true.",
      "{\"type\":\"object\",\"properties\":{\"summary\":{\"type\":\"string\"},\"dtstart\":{\"type\":\"string\"},\"dtend\":{\"type\":\"string\"},\"location\":{\"type\":\"string\"},\"description\":{\"type\":\"string\"},\"confirm\":{\"type\":\"boolean\"}},\"required\":[\"summary\",\"dtstart\",\"dtend\"]}",
      tool_create_calendar_event},
     {"list_threads", "List recent envelopes so conversations can be grouped by subject.",
      "{\"type\":\"object\",\"properties\":{\"folder\":{\"type\":\"string\"},\"page_size\":{\"type\":\"integer\"},\"account\":{\"type\":\"string\"}}}",
      tool_list_threads},
-    {"read_thread", "List messages whose subject matches a thread id.",
+    {"read_thread", "List up to 20 matching subject envelopes, not a complete thread. thread_id is a literal subject fragment without quotes or backslashes.",
      "{\"type\":\"object\",\"properties\":{\"thread_id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"}},\"required\":[\"thread_id\"]}",
      tool_read_thread},
-    {"snooze_email", "Remember a message until snoozeUntil (ISO time, tomorrow, Nh, or Nd).",
+    {"snooze_email", "Store a local snooze record (ISO timestamp, tomorrow, Nh, or Nd). Does not move mail, schedule a wake-up or notify.",
      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"folder\":{\"type\":\"string\"},\"account\":{\"type\":\"string\"},\"subject\":{\"type\":\"string\"},\"snoozeUntil\":{\"type\":\"string\"}},\"required\":[\"id\",\"snoozeUntil\"]}",
      tool_snooze_email},
     {"list_snoozed_emails", "List locally snoozed messages.",
      "{\"type\":\"object\",\"properties\":{}}", tool_list_snoozed_emails},
-    {"create_reminder", "Store a reminder locally.",
+    {"create_reminder", "Store a reminder locally without scheduling notifications. dueDate is an ISO timestamp; priority is 0-9.",
      "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"notes\":{\"type\":\"string\"},\"dueDate\":{\"type\":\"string\"},\"priority\":{\"type\":\"integer\"}},\"required\":[\"title\"]}",
      tool_create_reminder},
     {"health_check", "List accounts and folders to check that himalaya can reach mail.",
@@ -143,6 +143,37 @@ static void reply(cJSON *id, cJSON *result, cJSON *error) {
   cJSON_Delete(msg);
 }
 
+static void rpc_error(cJSON *id, int code, const char *message) {
+  cJSON *error = cJSON_CreateObject();
+  cJSON_AddNumberToObject(error, "code", code);
+  cJSON_AddStringToObject(error, "message", message);
+  reply(id, NULL, error);
+}
+
+static int valid_arguments(const Tool *tool, const cJSON *args) {
+  if (args && !cJSON_IsObject(args)) return 0;
+  cJSON *schema = cJSON_Parse(tool->schema);
+  const cJSON *required = cJSON_GetObjectItemCaseSensitive(schema, "required"), *key;
+  int valid = 1;
+  cJSON_ArrayForEach(key, required) if (!cJSON_GetObjectItemCaseSensitive(args, key->valuestring)) valid = 0;
+  const cJSON *props = cJSON_GetObjectItemCaseSensitive(schema, "properties"), *value;
+  cJSON_ArrayForEach(value, args) {
+    const cJSON *spec = cJSON_GetObjectItemCaseSensitive(props, value->string);
+    const char *type = arg_str(spec, "type");
+    if (!type) { valid = 0; continue; }
+    if (!strcmp(type, "string") && !cJSON_IsString(value)) valid = 0;
+    if (!strcmp(type, "integer") && (!cJSON_IsNumber(value) || value->valuedouble != value->valueint)) valid = 0;
+    if (!strcmp(type, "boolean") && !cJSON_IsBool(value)) valid = 0;
+    if (!strcmp(type, "array")) {
+      if (!cJSON_IsArray(value)) valid = 0;
+      const cJSON *item;
+      cJSON_ArrayForEach(item, value) if (!cJSON_IsString(item)) valid = 0;
+    }
+  }
+  cJSON_Delete(schema);
+  return valid;
+}
+
 static void tool_result(cJSON *id, Result r) {
   cJSON *result = cJSON_CreateObject();
   cJSON *content = cJSON_AddArrayToObject(result, "content");
@@ -158,11 +189,14 @@ static void tool_result(cJSON *id, Result r) {
 static void handle(cJSON *msg) {
   cJSON *id = cJSON_GetObjectItemCaseSensitive(msg, "id");
   cJSON *method_item = cJSON_GetObjectItemCaseSensitive(msg, "method");
-  if (!cJSON_IsString(method_item)) return;
+  const char *version = arg_str(msg, "jsonrpc");
+  if (!cJSON_IsObject(msg) || !version || strcmp(version, "2.0") || !cJSON_IsString(method_item) || (id && !cJSON_IsString(id) && !cJSON_IsNumber(id) && !cJSON_IsNull(id))) {
+    rpc_error(NULL, -32600, "invalid JSON-RPC request"); return;
+  }
+  if (!id) return; /* Notifications must not trigger tools or receive replies. */
   const char *method = method_item->valuestring;
   cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
-  if (!id && strncmp(method, "notifications/", 14) == 0) return;
-  if (!id && strcmp(method, "initialized") == 0) return;
+  if (params && !cJSON_IsObject(params)) { rpc_error(id, -32602, "params must be an object"); return; }
 
   if (!strcmp(method, "initialize")) {
     cJSON *result = cJSON_CreateObject();
@@ -199,16 +233,17 @@ static void handle(cJSON *msg) {
     const cJSON *name = params ? cJSON_GetObjectItemCaseSensitive(params, "name") : NULL;
     const cJSON *args = params ? cJSON_GetObjectItemCaseSensitive(params, "arguments") : NULL;
     if (!cJSON_IsString(name)) {
-      tool_result(id, result_err("missing tool name"));
+      rpc_error(id, -32602, "missing tool name");
       return;
     }
     for (int i = 0; i < tool_count; i++) {
       if (!strcmp(tools[i].name, name->valuestring)) {
-        tool_result(id, tools[i].fn(cJSON_IsObject(args) ? args : NULL));
+        if (!valid_arguments(&tools[i], args)) { rpc_error(id, -32602, "arguments do not match tool schema"); return; }
+        tool_result(id, tools[i].fn(args));
         return;
       }
     }
-    tool_result(id, result_err("unknown tool"));
+    rpc_error(id, -32602, "unknown tool");
     return;
   }
   if (!strcmp(method, "prompts/list")) {
@@ -218,6 +253,14 @@ static void handle(cJSON *msg) {
       cJSON *prompt = cJSON_CreateObject();
       cJSON_AddStringToObject(prompt, "name", prompts[i].name);
       cJSON_AddStringToObject(prompt, "description", prompts[i].description);
+      cJSON *arguments = cJSON_AddArrayToObject(prompt, "arguments");
+      const char *names[] = {"id", "folder", "account", "instructions"};
+      for (int j = 0; j < 4; j++) {
+        cJSON *argument = cJSON_CreateObject();
+        cJSON_AddStringToObject(argument, "name", names[j]);
+        cJSON_AddBoolToObject(argument, "required", 0);
+        cJSON_AddItemToArray(arguments, argument);
+      }
       cJSON_AddItemToArray(arr, prompt);
     }
     reply(id, result, NULL);
@@ -226,8 +269,15 @@ static void handle(cJSON *msg) {
   if (!strcmp(method, "prompts/get")) {
     const cJSON *name = params ? cJSON_GetObjectItemCaseSensitive(params, "name") : NULL;
     if (!cJSON_IsString(name)) {
-      reply(id, NULL, cJSON_CreateObject());
+      rpc_error(id, -32602, "prompt name is required");
       return;
+    }
+    const cJSON *arguments = cJSON_GetObjectItemCaseSensitive(params, "arguments"), *argument;
+    if (arguments && !cJSON_IsObject(arguments)) { rpc_error(id, -32602, "prompt arguments must be an object"); return; }
+    cJSON_ArrayForEach(argument, arguments) {
+      if (!cJSON_IsString(argument) || (strcmp(argument->string, "id") && strcmp(argument->string, "folder") && strcmp(argument->string, "account") && strcmp(argument->string, "instructions"))) {
+        rpc_error(id, -32602, "unknown or non-string prompt argument"); return;
+      }
     }
     for (size_t i = 0; i < sizeof prompts / sizeof prompts[0]; i++) {
       if (strcmp(prompts[i].name, name->valuestring)) continue;
@@ -238,19 +288,33 @@ static void handle(cJSON *msg) {
       cJSON_AddStringToObject(message, "role", "user");
       cJSON *content = cJSON_AddObjectToObject(message, "content");
       cJSON_AddStringToObject(content, "type", "text");
-      cJSON_AddStringToObject(content, "text", prompts[i].text);
+      char *context = arguments ? cJSON_PrintUnformatted(arguments) : strdup("{}");
+      char *text = malloc(strlen(prompts[i].text) + strlen(context) + 64);
+      sprintf(text, "%s\n\nUser-supplied context:\n%s", prompts[i].text, context);
+      cJSON_AddStringToObject(content, "text", text);
+      free(text); free(context);
       cJSON_AddItemToArray(messages, message);
       reply(id, result, NULL);
       return;
     }
-    reply(id, NULL, cJSON_CreateObject());
+    rpc_error(id, -32602, "unknown prompt");
     return;
+  }
+  if (!strcmp(method, "resources/templates/list")) {
+    cJSON *result = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(result, "resourceTemplates");
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "uriTemplate", "email://message/{id}");
+    cJSON_AddStringToObject(item, "name", "Message in the default account inbox");
+    cJSON_AddStringToObject(item, "mimeType", "text/plain");
+    cJSON_AddItemToArray(arr, item);
+    reply(id, result, NULL); return;
   }
   if (!strcmp(method, "resources/list")) {
     cJSON *result = cJSON_CreateObject();
     cJSON *arr = cJSON_AddArrayToObject(result, "resources");
-    const char *uris[] = {"email://inbox", "email://folders", "email://message/{id}"};
-    for (int i = 0; i < 3; i++) {
+    const char *uris[] = {"email://inbox", "email://folders"};
+    for (int i = 0; i < 2; i++) {
       cJSON *resource = cJSON_CreateObject();
       cJSON_AddStringToObject(resource, "uri", uris[i]);
       cJSON_AddStringToObject(resource, "name", uris[i]);
@@ -263,10 +327,10 @@ static void handle(cJSON *msg) {
   if (!strcmp(method, "resources/read")) {
     const cJSON *uri = params ? cJSON_GetObjectItemCaseSensitive(params, "uri") : NULL;
     if (!cJSON_IsString(uri)) {
-      reply(id, NULL, cJSON_CreateObject());
+      rpc_error(id, -32602, "resource URI is required");
       return;
     }
-    Result body = result_err("unknown resource");
+    Result body = {NULL, 1};
     if (!strcmp(uri->valuestring, "email://inbox")) body = tool_list_emails(NULL);
     else if (!strcmp(uri->valuestring, "email://folders")) body = tool_list_folders(NULL);
     else if (!strncmp(uri->valuestring, "email://message/", 16)) {
@@ -275,6 +339,7 @@ static void handle(cJSON *msg) {
       body = tool_read_email(args);
       cJSON_Delete(args);
     }
+    if (body.is_error) { rpc_error(id, -32002, body.text ? body.text : "unknown resource"); result_free(body); return; }
     cJSON *result = cJSON_CreateObject();
     cJSON *contents = cJSON_AddArrayToObject(result, "contents");
     cJSON *item = cJSON_CreateObject();
@@ -298,11 +363,12 @@ static void serve(void) {
   char *line = NULL;
   size_t cap = 0;
   while (getline(&line, &cap, stdin) != -1) {
-    cJSON *msg = cJSON_Parse(line);
+    const char *end = NULL;
+    cJSON *msg = cJSON_ParseWithOpts(line, &end, 1);
     if (msg) {
       handle(msg);
       cJSON_Delete(msg);
-    }
+    } else rpc_error(NULL, -32700, "invalid JSON");
   }
   free(line);
 }
