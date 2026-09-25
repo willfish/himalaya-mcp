@@ -1,9 +1,18 @@
 #define _POSIX_C_SOURCE 200809L
+#ifdef __APPLE__
+/* Darwin exposes mkdtemp through its extended unistd.h declarations. */
+#define _DARWIN_C_SOURCE
+#endif
 #include "date.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#ifndef DATE_ZONEINFO_DIR
+#define DATE_ZONEINFO_DIR "/usr/share/zoneinfo"
+#endif
 
 #define NOW ((time_t)1790339696) /* 2026-09-25 12:34:56Z */
 #define SPRING_EVE ((time_t)1774688400) /* 2026-03-28 09:00Z */
@@ -120,7 +129,8 @@ static void invalid_inputs(void) {
 }
 
 static void timezone_contract(void) {
-  unsetenv("HIMALAYA_TIMEZONE"); check(!strcmp(date_default_zone(),"UTC"),"documented UTC default");
+  unsetenv("HIMALAYA_TIMEZONE"); setenv("TZ","UTC0",1);
+  check(!strcmp(date_default_zone(),"UTC"),"UTC POSIX environment detection");
   setenv("HIMALAYA_TIMEZONE","Europe/London",1); check(!strcmp(date_default_zone(),"Europe/London"),"configured timezone");
   setenv("TZ","Pacific/Honolulu",1); tzset();
   resolves("2026-10-01 12:00",date_default_zone(),NOW,0,"2026-10-01T11:00:00Z");
@@ -133,8 +143,68 @@ static void timezone_contract(void) {
   resolves("2026-10-01 12:00","Asia/Kolkata",NOW,0,"2026-10-01T06:30:00Z");
 }
 
+static void bundled_timezone_data(void) {
+  char directory[]="/tmp/himalaya zones-XXXXXX", link[128];
+  check(mkdtemp(directory)!=NULL,"private timezone directory");
+  snprintf(link,sizeof link,"%s/bundle",directory);
+  check(!symlink(DATE_ZONEINFO_DIR,link),"bundled timezone fixture");
+  setenv("HIMALAYA_ZONEINFO_DIR",directory,1);
+  resolves("2026-10-01 12:00","bundle/Europe/London",NOW,0,"2026-10-01T11:00:00Z");
+  rejects("2026-10-25 01:30","bundle/Europe/London",NOW,0,"DST overlap");
+  setenv("HIMALAYA_ZONEINFO_DIR","relative/path",1);
+  rejects("2026-10-01 12:00","Europe/London",NOW,0,"absolute path");
+  char oversized[1100]; memset(oversized,'a',sizeof oversized-1);
+  oversized[0]='/'; oversized[sizeof oversized-1]=0;
+  setenv("HIMALAYA_ZONEINFO_DIR",oversized,1);
+  rejects("2026-10-01 12:00","Europe/London",NOW,0,"too long");
+  setenv("HIMALAYA_ZONEINFO_DIR","/nonexistent-himalaya-zoneinfo",1);
+  rejects("2026-10-01 12:00","Europe/London",NOW,0,"Unknown timezone");
+  resolves("2026-10-01 12:00Z","UTC",NOW,0,"2026-10-01T12:00:00Z");
+  unsetenv("HIMALAYA_ZONEINFO_DIR");
+  check(!unlink(link) && !rmdir(directory),"timezone fixture cleanup");
+}
+
+static void system_timezone_detection(void) {
+  char directory[]="/tmp/himalaya-system-zone-XXXXXX", local[160], config[160], zone[129];
+  check(mkdtemp(directory)!=NULL,"system timezone fixture directory");
+  snprintf(local,sizeof local,"%s/localtime",directory);
+  snprintf(config,sizeof config,"%s/timezone",directory);
+  check(!date_detect_zone(NULL,local,config,zone,sizeof zone) && !strcmp(zone,"UTC"),"missing system configuration falls back to UTC");
+  check(!date_detect_zone("Europe/London",local,config,zone,sizeof zone) && !strcmp(zone,"Europe/London"),"TZ IANA name");
+  check(!date_detect_zone(":Europe/London",local,config,zone,sizeof zone) && !strcmp(zone,"Europe/London"),"TZ colon prefix");
+  check(!date_detect_zone(":/usr/share/zoneinfo/Asia/Kolkata",local,config,zone,sizeof zone) && !strcmp(zone,"Asia/Kolkata"),"TZ absolute zoneinfo path");
+  check(!date_detect_zone("UTC0",local,config,zone,sizeof zone) && !strcmp(zone,"UTC"),"TZ UTC0 normalisation");
+  check(!date_detect_zone("",local,config,zone,sizeof zone) && !strcmp(zone,"UTC"),"empty TZ explicitly means UTC");
+  FILE *file=fopen(config,"w"); check(file!=NULL,"timezone text fixture");
+  fputs("  Asia/Kolkata\n",file); fclose(file);
+  check(!date_detect_zone(NULL,local,config,zone,sizeof zone) && !strcmp(zone,"Asia/Kolkata"),"timezone text file");
+  check(!symlink(DATE_ZONEINFO_DIR "/Europe/London",local),"localtime IANA symlink fixture");
+  check(!date_detect_zone(NULL,local,config,zone,sizeof zone) && !strcmp(zone,"Europe/London"),"symlink wins over stale text file");
+  check(!date_detect_zone("America/New_York",local,config,zone,sizeof zone) && !strcmp(zone,"America/New_York"),"TZ wins over system files");
+  check(!date_detect_zone("invalid zone",local,config,zone,sizeof zone) && !strcmp(zone,"Europe/London"),"unrecognised TZ falls through to system configuration");
+  check(!unlink(local),"remove symlink fixture");
+  FILE *source=fopen(DATE_ZONEINFO_DIR "/Europe/London","rb");
+  file=fopen(local,"wb"); check(source && file,"copied TZif fixture");
+  int c; while ((c=fgetc(source))!=EOF) fputc(c,file);
+  check(!ferror(source) && !ferror(file),"copy complete timezone data"); fclose(source); fclose(file);
+  check(!date_detect_zone(NULL,local,config,zone,sizeof zone) && !strcmp(zone,"system"),"copied localtime rules win over stale text file");
+  file=fopen(local,"w"); check(file!=NULL,"invalid localtime fixture"); fputs("invalid",file); fclose(file);
+  check(!date_detect_zone(NULL,local,config,zone,sizeof zone) && !strcmp(zone,"Asia/Kolkata"),"invalid localtime falls through to timezone file");
+  file=fopen(config,"w"); check(file!=NULL,"invalid timezone fixture"); fputs("Not/AZone\n",file); fclose(file);
+  setenv("LANG","en_GB.UTF-8",1);
+  check(!date_detect_zone("invalid",local,config,zone,sizeof zone) && !strcmp(zone,"UTC"),"locale does not imply a timezone");
+  check(date_detect_zone(NULL,local,config,zone,3)<0,"reject small output buffer");
+  setenv("TZ","UTC0",1); setenv("HIMALAYA_TIMEZONE","Asia/Kolkata",1);
+  check(!strcmp(date_default_zone(),"Asia/Kolkata"),"explicit environment override wins");
+  setenv("HIMALAYA_TIMEZONE","Not/AZone",1);
+  check(!strcmp(date_default_zone(),"Not/AZone"),"invalid explicit override is not silently replaced");
+  unsetenv("HIMALAYA_TIMEZONE"); unsetenv("TZ"); tzset();
+  check(!unlink(local) && !unlink(config) && !rmdir(directory),"system timezone fixture cleanup");
+}
+
 int main(void) {
-  absolute_formats(); named_months(); relative_dates(); daylight_saving(); invalid_inputs(); timezone_contract();
+  unsetenv("HIMALAYA_ZONEINFO_DIR");
+  absolute_formats(); named_months(); relative_dates(); daylight_saving(); invalid_inputs(); timezone_contract(); bundled_timezone_data(); system_timezone_detection();
   printf("date helpers: %u checks passed (formats, offsets, relative dates, DST, errors, TZ restoration)\n",checks);
   return 0;
 }

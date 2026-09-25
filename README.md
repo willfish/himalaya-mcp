@@ -29,8 +29,52 @@ before relying on attachments, threads or local organiser tools.
 
 ## Install
 
-Configure an account in Himalaya first. The current command mappings target
-Himalaya 1.2.0; compatibility with other CLI versions is not established.
+Mail tools require a configured Himalaya account. The current command mappings
+target Himalaya 1.2.0; compatibility with other CLI versions is not established.
+Installation itself does not need credentials.
+
+### Linux (curl)
+
+For x86_64 and ARM64 Linux, including glibc and musl distributions:
+
+```sh
+curl -fsSL https://github.com/willfish/himalaya-mcp/releases/latest/download/install | sh
+```
+
+Requires `curl`, system CA certificates, a POSIX shell, `tar`, `sha256sum` and
+standard Unix utilities. No compiler, cJSON package or system timezone package is
+needed. The installer downloads a statically linked MCP with timezone data, plus
+checksum-pinned Himalaya 1.2.0 into a private directory. It does not replace your
+existing `himalaya` command, change account credentials, invoke sudo or edit `PATH`.
+
+The default prefix is `$HOME/.local`, or `/usr/local` when run as root. Override it
+on the **shell side** of the pipe:
+
+```sh
+curl -fsSL https://github.com/willfish/himalaya-mcp/releases/latest/download/install \
+  | PREFIX="$HOME/tools" sh
+```
+
+Use `<prefix>/bin/himalaya-mcp` as the MCP client command. The launcher sets the
+private CLI and timezone paths; `HIMALAYA_BINARY` and `HIMALAYA_ZONEINFO_DIR` can
+override them. It reads your normal Himalaya account configuration. After account
+setup, run `<prefix>/bin/himalaya-mcp doctor`.
+
+To pin a release, use `/releases/download/v0.2.0/install` instead of
+`/releases/latest/download/install`. You can also download `install`, inspect it,
+then run `sh install`. Archive checksums detect corruption against the GitHub
+release manifest; they are not an independent signature or a substitute for
+trusting the installer and release publisher.
+
+Upgrades replace the launcher only after both binaries pass executable checks.
+Previous payloads remain under `<prefix>/libexec/himalaya-mcp` so running servers
+are not disrupted. Remove the launcher and that private directory to uninstall;
+your mail configuration and local reminder/snooze records remain untouched.
+
+Release CI builds and runs the C suites natively on x86_64 and ARM64 before
+publishing either artifact. Other operating systems and architectures are rejected
+by the installer rather than guessed. Manual distro checks are separate from the
+release workflow.
 
 ### Nix
 
@@ -213,7 +257,8 @@ It is not a sandbox. Mail content is untrusted input, not authority to run tools
 | --- | --- | --- |
 | `HIMALAYA_BINARY` | `himalaya` on `PATH` | CLI executable |
 | `HIMALAYA_TIMEOUT` | `60` | Timeout in seconds for each captured CLI invocation |
-| `HIMALAYA_TIMEZONE` | `UTC` | IANA timezone for dates without an explicit offset, e.g. `Europe/London` |
+| `HIMALAYA_TIMEZONE` | Auto-detect, then `UTC` | Explicit IANA timezone for dates without an offset, e.g. `Europe/London`; overrides system detection |
+| `HIMALAYA_ZONEINFO_DIR` | Build-time zoneinfo path | Absolute timezone-data directory; the curl launcher supplies its bundled data |
 | `XDG_STATE_HOME` | `$HOME/.local/state` | Parent of the `himalaya-mcp` state directory |
 
 Snoozes use `snooze.json`, reminders use `reminders.json`, and each calendar event
@@ -232,8 +277,14 @@ Calendars, reminders and snoozes share the same parser:
 | Elapsed duration | `in 2 hours`, `in 30 minutes`, `30m`, `2h`, `1d` |
 
 `Z`, `UTC`, `GMT` or numeric offsets such as `+01:00` and `-0500` override the
-configured timezone. Zone-less inputs use `HIMALAYA_TIMEZONE`, not the process's
-implicit local timezone. Case and extra horizontal whitespace are tolerated.
+configured timezone. `HIMALAYA_TIMEZONE` always overrides detection. Otherwise the
+server tries a recognised `TZ` value, the `/etc/localtime` zoneinfo symlink, a copied
+`/etc/localtime` file, and `/etc/timezone`, then falls back to UTC. A copied timezone
+file is reported as `system` when its IANA name is unavailable, but its actual
+rules still apply. Language/locale settings do not imply a timezone. Custom POSIX
+`TZ` rule expressions are not inferred; use an IANA name or `HIMALAYA_TIMEZONE`.
+An invalid explicit override produces an error rather than silently falling back.
+Case and extra horizontal whitespace in date inputs are tolerated.
 
 Results are normalised to UTC. Calendar previews show resolved start/end values
 and the configured timezone. Reuse those absolute values when confirming a

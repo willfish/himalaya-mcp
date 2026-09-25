@@ -1,0 +1,85 @@
+name: Release binaries
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Build static binary and run all C tests natively
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          grep -F "version=\${HIMALAYA_MCP_VERSION:-$VERSION}" install
+          docker build --file packaging/Dockerfile --build-arg VERSION="$VERSION" --output type=local,dest=dist .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: linux-*
+          path: dist
+          merge-multiple: true
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          cp install dist/install
+          cd dist
+          sha256sum -- *.tar.gz install > SHA256SUMS
+          gh release create "$VERSION" --verify-tag --draft --title "$VERSION" \
+            --notes 'Static Linux x86_64 and ARM64 binaries with timezone data. The installer also downloads checksum-pinned Himalaya 1.2.0. Both architectures run the full C suites before publication. See the README for installation and supported platforms.' \
+            ./*.tar.gz install SHA256SUMS
+          gh release edit "$VERSION" --draft=false --latest
+  verify-install:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Exercise the public installer natively
+        env:
+          VERSION: ${{ github.ref_name }}
+          HIMALAYA_TIMEZONE: Europe/London
+        shell: bash
+        run: |
+          curl -fsSL "https://github.com/willfish/himalaya-mcp/releases/download/$VERSION/install" \
+            | PREFIX="$RUNNER_TEMP/install space" sh
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+            | "$RUNNER_TEMP/install space/bin/himalaya-mcp" \
+            | jq -e '.result.serverInfo.name == "himalaya-mcp"'
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_calendar_event","arguments":{"summary":"Release preview","dtstart":"1 October 2026 at noon","dtend":"2026-10-01 12:30"}}}' \
+            | "$RUNNER_TEMP/install space/bin/himalaya-mcp" \
+            | jq -e '.result.isError != true and (.result.content[0].text | contains("Start: 2026-10-01T11:00:00Z"))'

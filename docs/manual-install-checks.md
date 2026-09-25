@@ -4,7 +4,45 @@ Use disposable containers, not host packages or real mail credentials. This
 walkthrough targets x86_64 Linux and needs Docker, curl, tar and sha256sum on the
 host. It is a manual recipe, not CI or an installation script.
 
-## Prepare a distribution
+## Check the public curl installer
+
+Use a fresh runtime-only container for each distribution. Install only curl and
+CA certificates, not the source-build prerequisites:
+
+```sh
+# Ubuntu
+apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+# Arch
+pacman -Syu --noconfirm --needed curl ca-certificates
+# Fedora
+# The base image supplies curl-minimal; keep it rather than adding conflicting curl.
+dnf install -y curl-minimal ca-certificates
+# Alpine
+apk add --no-cache curl ca-certificates
+```
+
+As a normal container user with a writable HOME, run the exact public command:
+
+```sh
+curl -fsSL https://github.com/willfish/himalaya-mcp/releases/latest/download/install | sh
+```
+
+Check `$HOME/.local/bin/himalaya-mcp`. Repeat as root for `/usr/local/bin`, and with
+`PREFIX` containing spaces. Check that GCC and Make are absent. Timezone previews
+must work even without `/usr/share/zoneinfo`: the release supplies its own data.
+After installation, disconnect the network and use the synthetic Maildir recipe
+below with the installed launcher. Do not require a separate `himalaya` command on
+PATH; the launcher uses its private CLI.
+
+Keep negative installer checks local with stubbed downloads: corrupt the archive,
+fail a download, and verify that the existing launcher is unchanged and temporary
+files are removed. Unsupported architectures, relative prefixes and malformed
+versions must fail rather than select another binary. Check repeat installations
+and that another user's system installation remains untouched.
+
+The remaining sections cover source builds, not validation of the curl flow.
+
+## Prepare a source-build distribution
 
 From the checkout, choose `ubuntu:24.04`, `archlinux:base`, `fedora:43` or
 `alpine:3.22`. Repeat with a fresh container for each distribution.

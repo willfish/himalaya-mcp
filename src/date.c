@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #ifndef DATE_ZONEINFO_DIR
 #define DATE_ZONEINFO_DIR "/usr/share/zoneinfo"
@@ -16,9 +17,70 @@ static int fail(char *error, size_t size, const char *message) {
   return -1;
 }
 
+static int zonefile(const char *path) {
+  FILE *file=fopen(path,"rb");
+  char magic[4];
+  int valid=file && fread(magic,1,4,file)==4 && !memcmp(magic,"TZif",4);
+  if (file) fclose(file);
+  return valid;
+}
+
+static int detected_name(const char *value, char *out, size_t size) {
+  if (!value) return 0;
+  if (*value==':') value++;
+  const char *suffix=strstr(value,"/zoneinfo/");
+  if (suffix) value=suffix+10;
+  if (!*value || !strcmp(value,"UTC0") || !strcmp(value,"GMT0")) value="UTC";
+  size_t length=strlen(value);
+  if (!length || length>128 || length>=size || *value=='/' || strstr(value,"..")) return 0;
+  for (const char *p=value; *p; p++) if (!isalnum((unsigned char)*p) && !strchr("/_+-",*p)) return 0;
+  if (strcmp(value,"UTC")) {
+    const char *root=getenv("HIMALAYA_ZONEINFO_DIR");
+    if (!root || !*root) root=DATE_ZONEINFO_DIR;
+    if (*root!='/') return 0;
+    char path[1024];
+    int n=snprintf(path,sizeof path,"%s/%s",root,value);
+    if (n<0 || (size_t)n>=sizeof path || !zonefile(path)) return 0;
+  }
+  memcpy(out,value,length+1);
+  return 1;
+}
+
+int date_detect_zone(const char *tz, const char *localtime_path, const char *timezone_path,
+                     char *out, size_t size) {
+  if (!out || size<7 || !localtime_path || !timezone_path) return -1;
+  if (tz && detected_name(tz,out,size)) return 0;
+  char link[1024];
+  ssize_t n=readlink(localtime_path,link,sizeof link-1);
+  if (n>0 && (size_t)n<sizeof link-1) {
+    link[n]=0;
+    /* Only infer a name from an actual zoneinfo path, not an arbitrary symlink. */
+    if (strstr(link,"/zoneinfo/") && detected_name(link,out,size)) return 0;
+  }
+  /* A copied TZif file is authoritative even when its IANA name is unavailable.
+     Do not substitute a potentially stale /etc/timezone value for its rules. */
+  if (zonefile(localtime_path)) { strcpy(out,"system"); return 0; }
+  FILE *file=fopen(timezone_path,"r");
+  char name[160];
+  if (file) {
+    if (fgets(name,sizeof name,file)) {
+      size_t length=strlen(name);
+      while (length && isspace((unsigned char)name[length-1])) name[--length]=0;
+      char *start=name; while (*start && isspace((unsigned char)*start)) start++;
+      if (*start && detected_name(start,out,size)) { fclose(file); return 0; }
+    }
+    fclose(file);
+  }
+  strcpy(out,"UTC");
+  return 0;
+}
+
 const char *date_default_zone(void) {
-  const char *zone = getenv("HIMALAYA_TIMEZONE");
-  return zone && *zone ? zone : "UTC";
+  const char *zone=getenv("HIMALAYA_TIMEZONE");
+  if (zone && *zone) return zone;
+  static char detected[129];
+  date_detect_zone(getenv("TZ"),"/etc/localtime","/etc/timezone",detected,sizeof detected);
+  return detected;
 }
 
 int date_format_utc(time_t instant, MailDate *out) {
@@ -231,15 +293,18 @@ int date_parse(const char *input, time_t now, const char *zone, unsigned flags,
   input_copy[used]=0;
   char tz[1024];
   if (!strcmp(zone,"UTC")) strcpy(tz,"UTC0");
-  else {
+  else if (!strcmp(zone,"system")) {
+    if (!zonefile("/etc/localtime")) return fail(error,error_size,"System timezone data is unavailable; set HIMALAYA_TIMEZONE explicitly.");
+    strcpy(tz,":/etc/localtime");
+  } else {
     if (strlen(zone)>128 || *zone=='/' || strstr(zone,"..")) return fail(error,error_size,"Invalid timezone. Use an IANA name such as Europe/London, or UTC.");
     for (const char *p=zone; *p; p++) if (!isalnum((unsigned char)*p) && !strchr("/_+-",*p)) return fail(error,error_size,"Invalid IANA timezone name.");
-    snprintf(tz,sizeof tz,":%s/%s",DATE_ZONEINFO_DIR,zone);
-    FILE *file=fopen(tz+1,"rb");
-    char magic[4];
-    int valid=file && fread(magic,1,4,file)==4 && !memcmp(magic,"TZif",4);
-    if (file) fclose(file);
-    if (!valid) return fail(error,error_size,"Unknown timezone. Set HIMALAYA_TIMEZONE to an installed IANA name such as Europe/London, or UTC.");
+    const char *directory=getenv("HIMALAYA_ZONEINFO_DIR");
+    if (!directory || !*directory) directory=DATE_ZONEINFO_DIR;
+    if (*directory!='/') return fail(error,error_size,"HIMALAYA_ZONEINFO_DIR must be an absolute path.");
+    int written=snprintf(tz,sizeof tz,":%s/%s",directory,zone);
+    if (written<0 || (size_t)written>=sizeof tz) return fail(error,error_size,"Timezone directory path is too long.");
+    if (!zonefile(tz+1)) return fail(error,error_size,"Unknown timezone. Set HIMALAYA_TIMEZONE to an installed IANA name such as Europe/London, or UTC.");
   }
   const char *old=getenv("TZ");
   char *saved=old ? strdup(old) : NULL;

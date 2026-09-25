@@ -1,0 +1,90 @@
+#!/bin/sh
+# Download this script for inspection, or pipe it to sh. No sudo or shell edits.
+set -eu
+
+fail() { printf 'himalaya-mcp: %s\n' "$*" >&2; exit 1; }
+fetch() { curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 "$1" -o "$2"; }
+
+main() {
+  case "${1:-}" in
+    '') ;;
+    --help) printf 'Usage: curl -fsSL <release>/install | sh\nOverrides: PREFIX, HIMALAYA_MCP_VERSION\nSupported: Linux x86_64 and aarch64\n'; exit 0 ;;
+    *) fail 'Use PREFIX and HIMALAYA_MCP_VERSION environment variables, or --help.' ;;
+  esac
+  for tool in curl tar sha256sum uname id mktemp mkdir cp mv chmod rm awk grep dirname; do
+    command -v "$tool" >/dev/null 2>&1 || fail "Required command missing: $tool"
+  done
+  [ "$(uname -s)" = Linux ] || fail 'Prebuilt releases support Linux only; use the source/Nix instructions for other systems.'
+  case "$(uname -m)" in
+    x86_64|amd64)
+      arch=x86_64
+      himalaya_hash=e04e6382e3e664ef34b01afa1a2216113194a2975d2859727647b22d9b36d4e4 ;;
+    aarch64|arm64)
+      arch=aarch64
+      himalaya_hash=643020b220991fac67726f3be11310fcf806e757feadbbab3efbddd713597872 ;;
+    *) fail "Unsupported architecture: $(uname -m)" ;;
+  esac
+  version=${HIMALAYA_MCP_VERSION:-v0.2.0}
+  case "$version" in *[!v0-9.]*|'') fail 'Invalid release version.' ;; esac
+  printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || fail 'Version must be vMAJOR.MINOR.PATCH.'
+  if [ -n "${PREFIX:-}" ]; then prefix=$PREFIX
+  elif [ "$(id -u)" = 0 ]; then prefix=/usr/local
+  else prefix=${HOME:?HOME must be set}/.local
+  fi
+  case "$prefix" in /*) ;; *) fail 'PREFIX must be an absolute path.' ;; esac
+  [ ! -d "$prefix/bin/himalaya-mcp" ] || fail 'The launcher destination is a directory.'
+  umask 022
+  tmp=$(mktemp -d)
+  stage=''
+  launcher=''
+  trap 'rm -rf "$tmp"; if [ -n "$stage" ]; then rm -rf "$stage"; fi; if [ -n "$launcher" ]; then rm -f "$launcher"; fi' EXIT
+  trap 'exit 1' HUP INT TERM
+  archive="himalaya-mcp-$version-linux-$arch.tar.gz"
+  release="https://github.com/willfish/himalaya-mcp/releases/download/$version"
+  printf 'Downloading %s for Linux %s...\n' "$version" "$arch"
+  fetch "$release/$archive" "$tmp/$archive"
+  fetch "$release/SHA256SUMS" "$tmp/SHA256SUMS"
+  expected=$(awk -v name="$archive" '$2 == name {print $1}' "$tmp/SHA256SUMS")
+  [ "${#expected}" = 64 ] || fail 'Missing or duplicate archive checksum.'
+  case "$expected" in *[!0-9a-f]*) fail 'Invalid archive checksum.' ;; esac
+  (cd "$tmp" && printf '%s  %s\n' "$expected" "$archive" | sha256sum -c -) || fail 'MCP checksum verification failed.'
+  mkdir "$tmp/package"
+  tar -xzf "$tmp/$archive" -C "$tmp/package"
+  [ -x "$tmp/package/himalaya-mcp" ] && [ -f "$tmp/package/zoneinfo/UTC" ] || fail 'Incomplete MCP archive.'
+  fetch "https://github.com/pimalaya/himalaya/releases/download/v1.2.0/himalaya.$arch-linux.tgz" "$tmp/himalaya.tgz"
+  (cd "$tmp" && printf '%s  himalaya.tgz\n' "$himalaya_hash" | sha256sum -c -) || fail 'Himalaya checksum verification failed.'
+  tar -xzf "$tmp/himalaya.tgz" -C "$tmp/package" himalaya
+  "$tmp/package/himalaya" --version
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | "$tmp/package/himalaya-mcp" > "$tmp/probe.json"
+  grep -q '"name":"himalaya-mcp"' "$tmp/probe.json" || fail 'MCP executable check failed.'
+
+  # Stage both executables before atomically replacing the launcher. Retain older
+  # installations so an upgrade cannot remove files used by a running server.
+  mkdir -p "$prefix/bin" "$prefix/libexec/himalaya-mcp"
+  stage=$(mktemp -d "$prefix/libexec/himalaya-mcp/$version.XXXXXX")
+  cp -R "$tmp/package/." "$stage/"
+  chmod 755 "$stage"
+  installed=${stage##*/}
+  launcher=$(mktemp "$prefix/bin/.himalaya-mcp.XXXXXX")
+  # These expressions belong to the generated launcher, not the installer.
+  # shellcheck disable=SC2016
+  {
+    printf '%s\n' '#!/bin/sh' 'set -eu' 'bindir=$(CDPATH= cd -P "$(dirname "$0")" && pwd)'
+    printf 'root="$bindir/../libexec/himalaya-mcp/%s"\n' "$installed"
+    printf '%s\n' 'export HIMALAYA_BINARY="${HIMALAYA_BINARY:-$root/himalaya}"' \
+      'export HIMALAYA_ZONEINFO_DIR="${HIMALAYA_ZONEINFO_DIR:-$root/zoneinfo}"' \
+      'exec "$root/himalaya-mcp" "$@"'
+  } > "$launcher"
+  chmod 755 "$launcher"
+  # Do not let a cleanup trap remove the payload after its launcher is committed.
+  trap '' HUP INT TERM
+  mv -f "$launcher" "$prefix/bin/himalaya-mcp"
+  launcher=''
+  stage=''
+  printf '\nInstalled: %s/bin/himalaya-mcp\n' "$prefix"
+  printf 'Includes a private Himalaya 1.2.0 and timezone data. No account credentials were changed.\n'
+  printf 'Use that absolute path in your MCP client, or add %s/bin to PATH.\n' "$prefix"
+  printf 'Configure a Himalaya account, then run: "%s/bin/himalaya-mcp" doctor\n' "$prefix"
+}
+
+main "$@"
