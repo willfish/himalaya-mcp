@@ -28,6 +28,7 @@ static int fake(int argc, char **argv) {
     size_t length = fread(template, 1, sizeof template - 1, stdin);
     template[length] = 0;
     if (strncmp(template, "From:", 5)) return 3;
+    if (!strcmp(argv[3], "save") && !strstr(template, "Content-Type: text/plain; charset=UTF-8\n")) return 9;
     FILE *log = fopen(getenv("TEST_LOG"), "a");
     if (!log) return 4;
     fprintf(log, "%s\n", argv[3]);

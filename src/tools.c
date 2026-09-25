@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -463,6 +464,11 @@ Result tool_save_draft(const cJSON *args) {
     return result_err("save_draft accepts plain-text message templates only, not MML or attachments");
   if (strncmp(template, "From:", 5) || !strstr(template, "\n\n"))
     return result_err("draft needs headers starting with From and a blank line before the body");
+  const char *separator = strstr(template, "\n\n");
+  for (const char *line = template; line < separator; line = strchr(line, '\n') + 1) {
+    if (!strncasecmp(line, "Content-", 8) || !strncasecmp(line, "MIME-Version:", 13))
+      return result_err("save_draft expects a plain-text template without MIME headers");
+  }
   Argv a;
   him_start(&a);
   /* Himalaya 1.2 template save appends twice. Raw message save appends once.
@@ -474,7 +480,17 @@ Result tool_save_draft(const cJSON *args) {
   if (*account) { argv_add(&a, "-a"); argv_add(&a, account); }
   argv_add(&a, "-f");
   argv_add(&a, folder);
-  Result saved = him_run_input(&a, template);
+  const char *body = strstr(template, "\n\n");
+  size_t headers = (size_t)(body - template);
+  const char *mime = "\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit";
+  size_t size = strlen(template) + strlen(mime) + 1;
+  char *message = malloc(size);
+  if (!message) { argv_free(&a); return result_err("out of memory"); }
+  memcpy(message, template, headers);
+  strcpy(message + headers, mime);
+  strcat(message, body);
+  Result saved = him_run_input(&a, message);
+  free(message);
   if (saved.is_error) return saved;
   result_free(saved);
   return result_ok(strdup("draft saved; not sent\n"));
