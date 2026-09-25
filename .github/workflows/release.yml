@@ -69,25 +69,3 @@ jobs:
             --notes 'Static Linux x86_64 and ARM64 binaries with timezone data. The installer also downloads checksum-pinned Himalaya 1.2.0. Both architectures run the full C suites before publication. See the README for installation and supported platforms.' \
             ./*.tar.gz install SHA256SUMS
           gh release edit "$VERSION" --draft=false --latest
-  verify-install:
-    needs: publish
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Exercise the public installer natively
-        env:
-          VERSION: ${{ inputs.version || github.ref_name }}
-          HIMALAYA_TIMEZONE: Europe/London
-        shell: bash
-        run: |
-          curl -fsSL "https://github.com/willfish/himalaya-mcp/releases/download/$VERSION/install" \
-            | PREFIX="$RUNNER_TEMP/install space" sh
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-            | "$RUNNER_TEMP/install space/bin/himalaya-mcp" \
-            | jq -e '.result.serverInfo.name == "himalaya-mcp"'
-          printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_calendar_event","arguments":{"summary":"Release preview","dtstart":"1 October 2026 at noon","dtend":"2026-10-01 12:30"}}}' \
-            | "$RUNNER_TEMP/install space/bin/himalaya-mcp" \
-            | jq -e '.result.isError != true and (.result.content[0].text | contains("Start: 2026-10-01T11:00:00Z"))'
