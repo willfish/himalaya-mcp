@@ -146,10 +146,6 @@ static char *export_dir(const cJSON *args, int full) {
   return dir;
 }
 
-static int skip_body_part(const char *name) {
-  return strcmp(name, "plain.txt") == 0 || strcmp(name, "index.html") == 0;
-}
-
 Result tool_read_email_html(const cJSON *args) {
   char *dir = export_dir(args, 0);
   if (!dir) return result_err("could not export message");
@@ -327,32 +323,61 @@ Result tool_delete_folder(const cJSON *args) {
   return result_ok(strdup("folder deleted\n"));
 }
 
-static char *template_from_args(const cJSON *args, const char *body) {
-  const char *to = arg_str(args, "to");
-  const char *subject = arg_str(args, "subject");
-  const char *cc = arg_str(args, "cc");
-  const char *bcc = arg_str(args, "bcc");
-  size_t n = 1024 + (body ? strlen(body) : 0);
-  char *text = malloc(n);
-  size_t w = 0;
-  w += (size_t)snprintf(text + w, n - w, "To: %s\n", to ? to : "");
-  if (cc && *cc) w += (size_t)snprintf(text + w, n - w, "Cc: %s\n", cc);
-  if (bcc && *bcc) w += (size_t)snprintf(text + w, n - w, "Bcc: %s\n", bcc);
-  w += (size_t)snprintf(text + w, n - w, "Subject: %s\n\n%s\n", subject ? subject : "", body ? body : "");
-  const cJSON *attachments = arg_array(args, "attachments");
-  if (attachments) {
-    const cJSON *path;
-    cJSON_ArrayForEach(path, attachments) {
-      if (!cJSON_IsString(path) || path->valuestring[0] != '/') continue;
-      size_t need = w + strlen(path->valuestring) + 64;
-      if (need > n) {
-        n = need;
-        text = realloc(text, n);
-      }
-      w += (size_t)snprintf(text + w, n - w, "<#part filename=%s><#/part>\n", path->valuestring);
+/* Let Himalaya supply the selected account's From header and signature. */
+static Result template_from_args(const cJSON *args) {
+  const char *account = account_of(args);
+  const char *body = arg_str(args, "body");
+  if (!account || !arg_str(args, "to") || !arg_str(args, "subject") || !body)
+    return result_err("to, subject, body and a valid account are required");
+  /* Plain composition must not turn body text into local-file MML directives. */
+  if (strstr(body, "<#")) return result_err("MML directives are not accepted in plain body text");
+  Argv a;
+  him_start(&a);
+  argv_add(&a, "template");
+  argv_add(&a, "write");
+  him_opts(&a, account);
+  const char *keys[] = {"to", "subject", "cc", "bcc"};
+  const char *headers[] = {"To", "Subject", "Cc", "Bcc"};
+  for (size_t i = 0; i < 4; i++) {
+    const char *value = arg_str(args, keys[i]);
+    if (!value) continue;
+    if (strpbrk(value, "\r\n")) {
+      argv_free(&a);
+      return result_err("email headers must not contain CR or LF");
     }
+    size_t size = strlen(value) + strlen(headers[i]) + 3;
+    char *header = malloc(size);
+    snprintf(header, size, "%s: %s", headers[i], value);
+    argv_add(&a, "-H");
+    argv_add(&a, header);
+    free(header);
   }
-  return text;
+  argv_add(&a, "--");
+  argv_add(&a, body);
+  return him_run(&a);
+}
+
+static Result attach_files(const cJSON *args, const char *template) {
+  char *text = strdup(template);
+  const cJSON *files = cJSON_GetObjectItemCaseSensitive(args, "attachments");
+  if (files && !cJSON_IsArray(files)) { free(text); return result_err("attachments must be an array"); }
+  const cJSON *file;
+  cJSON_ArrayForEach(file, files) {
+    struct stat st;
+    const char *path = cJSON_IsString(file) ? file->valuestring : NULL;
+    if (!path || *path != '/' || strpbrk(path, "\r\n\"\\<>") ||
+        stat(path, &st) != 0 || !S_ISREG(st.st_mode) || access(path, R_OK) != 0) {
+      free(text);
+      return result_err("attachment must be a readable absolute file path without MML delimiters");
+    }
+    size_t used = strlen(text), size = used + strlen(path) + 80;
+    char *next = realloc(text, size);
+    if (!next) { free(text); return result_err("out of memory"); }
+    text = next;
+    snprintf(text + used, size - used,
+             "\n<#part disposition=attachment filename=\"%s\"><#/part>\n", path);
+  }
+  return result_ok(text);
 }
 
 static Result send_template(const char *account, const char *template) {
@@ -361,22 +386,20 @@ static Result send_template(const char *account, const char *template) {
   argv_add(&a, "template");
   argv_add(&a, "send");
   him_opts(&a, account);
-  argv_add(&a, "--");
-  argv_add(&a, template);
-  Result raw = him_run(&a);
+  Result raw = him_run_input(&a, template);
   if (raw.is_error) return raw;
   result_free(raw);
   return result_ok(strdup("sent\n"));
 }
 
 Result tool_compose_email(const cJSON *args) {
-  const char *to = arg_str(args, "to");
-  const char *subject = arg_str(args, "subject");
-  const char *body = arg_str(args, "body");
   const char *account = account_of(args);
-  if (!account || !to || !subject || !body || strchr(to, '\n') || strchr(subject, '\n'))
-    return result_err("to, subject, and body are required");
-  char *template = template_from_args(args, body);
+  Result generated = template_from_args(args);
+  if (generated.is_error) return generated;
+  Result attached = attach_files(args, generated.text);
+  result_free(generated);
+  if (attached.is_error) return attached;
+  char *template = attached.text;
   if (!arg_bool(args, "confirm")) {
     char *preview = malloc(strlen(template) + 80);
     sprintf(preview, "PREVIEW: not sent. Call again with confirm=true to send.\n\n%s", template);
@@ -407,35 +430,17 @@ Result tool_draft_reply(const cJSON *args) {
   if (body && *body) argv_add(&a, body);
   Result raw = him_run(&a);
   if (raw.is_error) return raw;
-  char *text = malloc(strlen(raw.text) + 64);
-  sprintf(text, "DRAFT: not sent.\n\n%s", raw.text);
-  result_free(raw);
-  return result_ok(text);
+  /* Return a reusable MML template, not a status prefix that breaks parsing. */
+  return raw;
 }
 
 Result tool_send_email(const cJSON *args) {
   const char *template = arg_str(args, "template");
   const char *account = account_of(args);
   if (!account || !template || !*template) return result_err("template is required");
-  char *full = template_from_args(args, NULL);
-  /* template_from_args always writes To/Subject. Prefer the supplied template. */
-  free(full);
-  char *with_attachments = strdup(template);
-  const cJSON *attachments = arg_array(args, "attachments");
-  if (attachments) {
-    size_t n = strlen(with_attachments) + 32;
-    const cJSON *path;
-    cJSON_ArrayForEach(path, attachments) {
-      if (cJSON_IsString(path)) n += strlen(path->valuestring) + 64;
-    }
-    with_attachments = realloc(with_attachments, n);
-    cJSON_ArrayForEach(path, attachments) {
-      if (!cJSON_IsString(path) || path->valuestring[0] != '/') continue;
-      strcat(with_attachments, "\n<#part filename=");
-      strcat(with_attachments, path->valuestring);
-      strcat(with_attachments, "><#/part>");
-    }
-  }
+  Result attached = attach_files(args, template);
+  if (attached.is_error) return attached;
+  char *with_attachments = attached.text;
   if (!arg_bool(args, "confirm")) {
     char *preview = malloc(strlen(with_attachments) + 80);
     sprintf(preview, "PREVIEW: not sent. Call again with confirm=true to send.\n\n%s", with_attachments);
@@ -445,6 +450,34 @@ Result tool_send_email(const cJSON *args) {
   Result sent = send_template(account, with_attachments);
   free(with_attachments);
   return sent;
+}
+
+Result tool_save_draft(const cJSON *args) {
+  const char *template = arg_str(args, "template");
+  const char *account = account_of(args);
+  const char *folder = arg_str(args, "folder");
+  if (!folder) folder = "drafts"; /* Himalaya's configured folder alias. */
+  if (!template || !*template || !account || !valid_folder(folder))
+    return result_err("template and valid account/folder are required");
+  if (strstr(template, "<#") || cJSON_GetObjectItemCaseSensitive(args, "attachments"))
+    return result_err("save_draft accepts plain-text message templates only, not MML or attachments");
+  if (strncmp(template, "From:", 5) || !strstr(template, "\n\n"))
+    return result_err("draft needs headers starting with From and a blank line before the body");
+  Argv a;
+  him_start(&a);
+  /* Himalaya 1.2 template save appends twice. Raw message save appends once.
+     Its JSON mode ignores stdin, so select plain output explicitly. */
+  argv_add(&a, "message");
+  argv_add(&a, "save");
+  argv_add(&a, "-o");
+  argv_add(&a, "plain");
+  if (*account) { argv_add(&a, "-a"); argv_add(&a, account); }
+  argv_add(&a, "-f");
+  argv_add(&a, folder);
+  Result saved = him_run_input(&a, template);
+  if (saved.is_error) return saved;
+  result_free(saved);
+  return result_ok(strdup("draft saved; not sent\n"));
 }
 
 Result tool_export_to_markdown(const cJSON *args) {
@@ -510,10 +543,25 @@ Result tool_copy_to_clipboard(const cJSON *args) {
 }
 
 static Result attachment_dir(const cJSON *args, char **dir_out) {
-  char *dir = export_dir(args, 0);
-  if (!dir) return result_err("could not export attachments");
-  *dir_out = dir;
-  return result_ok(strdup(""));
+  const char *id = arg_str(args, "id"), *account = account_of(args), *folder = folder_of(args);
+  if (!valid_id(id) || !account || !folder) return result_err("invalid id, account or folder");
+  char dir[] = "/tmp/himalaya-mcp-attachments-XXXXXX";
+  if (!mkdtemp(dir)) return result_err("could not create attachment directory");
+  Argv a;
+  him_start(&a);
+  argv_add(&a, "attachment");
+  argv_add(&a, "download");
+  him_opts(&a, account);
+  argv_add(&a, "-f");
+  argv_add(&a, folder);
+  argv_add(&a, "-d");
+  argv_add(&a, dir);
+  argv_add(&a, "--");
+  argv_add(&a, id);
+  Result downloaded = him_run(&a);
+  if (downloaded.is_error) { rmdir(dir); return downloaded; }
+  *dir_out = strdup(dir);
+  return downloaded;
 }
 
 Result tool_list_attachments(const cJSON *args) {
@@ -526,7 +574,7 @@ Result tool_list_attachments(const cJSON *args) {
   if (d) {
     struct dirent *ent;
     while ((ent = readdir(d))) {
-      if (ent->d_name[0] == '.' || skip_body_part(ent->d_name)) continue;
+      if (ent->d_name[0] == '.') continue;
       char path[512];
       snprintf(path, sizeof path, "%s/%s", dir, ent->d_name);
       struct stat st;
@@ -553,34 +601,17 @@ Result tool_download_attachment(const cJSON *args) {
   Result prep = attachment_dir(args, &dir);
   if (prep.is_error) return prep;
   result_free(prep);
-  char src[512];
-  snprintf(src, sizeof src, "%s/%s", dir, filename);
-  char tmpl[] = "/tmp/himalaya-mcp-file-XXXXXX";
-  char *dest_dir = mkdtemp(tmpl);
-  if (!dest_dir) {
-    free(dir);
-    return result_err("could not create download directory");
-  }
-  char dest[512];
-  snprintf(dest, sizeof dest, "%s/%s", dest_dir, filename);
-  char *bytes = read_file(src, 16 * 1024 * 1024);
-  if (!bytes) {
-    free(dir);
-    return result_err("attachment not found");
-  }
-  FILE *f = fopen(dest, "wb");
-  if (!f) {
-    free(bytes);
-    free(dir);
-    return result_err("could not write attachment");
-  }
-  fwrite(bytes, 1, strlen(bytes), f);
-  fclose(f);
-  free(bytes);
+  size_t size = strlen(dir) + strlen(filename) + 2;
+  char *path = malloc(size);
+  snprintf(path, size, "%s/%s", dir, filename);
   free(dir);
-  char *text = malloc(strlen(dest) + 2);
-  sprintf(text, "%s\n", dest);
-  return result_ok(text);
+  struct stat st;
+  if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+    free(path);
+    return result_err("attachment not found or not a regular file");
+  }
+  /* Export already wrote the original bytes in a private directory. No copy. */
+  return result_ok(path);
 }
 
 Result tool_extract_calendar_event(const cJSON *args) {
@@ -616,6 +647,7 @@ Result tool_create_calendar_event(const cJSON *args) {
   const char *end = arg_str(args, "dtend");
   if (!summary || !start || !end) return result_err("summary, dtstart, and dtend are required");
   char *ics = malloc(strlen(summary) + strlen(start) + strlen(end) + 256);
+  if (!ics) return result_err("out of memory");
   sprintf(ics,
           "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:%s\nDTSTART:%s\nDTEND:%s\nEND:VEVENT\nEND:VCALENDAR\n",
           summary, start, end);

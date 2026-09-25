@@ -86,16 +86,32 @@ static int append_fd(char **buf, size_t *len, size_t *cap, int fd, size_t max) {
 }
 
 int run_cmd(char *const argv[], Capture *cap) {
+  return run_cmd_input(argv, cap, NULL);
+}
+
+int run_cmd_input(char *const argv[], Capture *cap, const char *input) {
+  /* Anonymous file avoids pipe deadlocks for large templates and argv exposure. */
+  FILE *in = tmpfile();
+  if (!in) return -1;
+  if (input && fwrite(input, 1, strlen(input), in) != strlen(input)) {
+    fclose(in);
+    return -1;
+  }
+  if (fflush(in) || fseek(in, 0, SEEK_SET)) { fclose(in); return -1; }
   int outp[2], errp[2];
-  if (pipe(outp) < 0 || pipe(errp) < 0) return -1;
+  if (pipe(outp) < 0) { fclose(in); return -1; }
+  if (pipe(errp) < 0) { close(outp[0]); close(outp[1]); fclose(in); return -1; }
   pid_t pid = fork();
-  if (pid < 0) return -1;
+  if (pid < 0) {
+    close(outp[0]); close(outp[1]); close(errp[0]); close(errp[1]); fclose(in);
+    return -1;
+  }
   if (pid == 0) {
     setpgid(0, 0);
     dup2(outp[1], STDOUT_FILENO);
     dup2(errp[1], STDERR_FILENO);
-    int devnull = open("/dev/null", O_RDONLY);
-    if (devnull >= 0) dup2(devnull, STDIN_FILENO);
+    if (dup2(fileno(in), STDIN_FILENO) < 0) _exit(126);
+    fclose(in);
     close(outp[0]);
     close(outp[1]);
     close(errp[0]);
@@ -104,6 +120,7 @@ int run_cmd(char *const argv[], Capture *cap) {
     dprintf(STDERR_FILENO, "exec %s: %s\n", argv[0], strerror(errno));
     _exit(127);
   }
+  fclose(in);
   setpgid(pid, pid);
   close(outp[1]);
   close(errp[1]);
@@ -124,6 +141,8 @@ int run_cmd(char *const argv[], Capture *cap) {
       kill(-pid, SIGKILL);
       waitpid(pid, &cap->status, 0);
       cap->status = -1;
+      close(outp[0]);
+      close(errp[0]);
       return -1;
     }
     struct pollfd fds[2] = {
@@ -238,9 +257,13 @@ void him_opts(Argv *a, const char *account) {
 }
 
 Result him_run(Argv *a) {
+  return him_run_input(a, NULL);
+}
+
+Result him_run_input(Argv *a, const char *input) {
   argv_add(a, NULL);
   Capture cap = {0};
-  int rc = run_cmd(a->v, &cap);
+  int rc = run_cmd_input(a->v, &cap, input);
   argv_free(a);
   if (rc < 0) {
     capture_free(&cap);
@@ -255,6 +278,16 @@ Result him_run(Argv *a) {
   char *out = cap.out ? cap.out : strdup("");
   cap.out = NULL;
   capture_free(&cap);
+  /* Templates use {content, cursor}; other CLI text may be a JSON string. */
+  cJSON *parsed = cJSON_Parse(out);
+  const cJSON *text = cJSON_IsObject(parsed)
+      ? cJSON_GetObjectItemCaseSensitive(parsed, "content") : parsed;
+  if (cJSON_IsString(text)) {
+    char *decoded = strdup(text->valuestring);
+    free(out);
+    out = decoded;
+  }
+  cJSON_Delete(parsed);
   return result_ok(out);
 }
 

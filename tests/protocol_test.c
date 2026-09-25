@@ -93,7 +93,7 @@ int main(int argc, char **argv) {
 
   cJSON *tools = rpc(to, from, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
   cJSON *tool_arr = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(tools, "result"), "tools");
-  if (!cJSON_IsArray(tool_arr) || cJSON_GetArraySize(tool_arr) != 29) fail("tool count");
+  if (!cJSON_IsArray(tool_arr) || cJSON_GetArraySize(tool_arr) != 30) fail("tool count");
   cJSON_Delete(tools);
 
   cJSON *prompts = rpc(to, from, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"prompts/list\"}");
@@ -133,6 +133,6 @@ int main(int argc, char **argv) {
   int status = 0;
   if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) fail("server exit");
   fclose(from);
-  puts("ok 29 tools");
+  puts("ok 30 tools");
   return 0;
 }

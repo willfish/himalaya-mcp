@@ -105,6 +105,17 @@ Omit `account` to use Himalaya's default account. Folder-aware calls default to
 `INBOX`. Use IDs from the same account and folder as the subsequent read or update.
 For search syntax, consult `himalaya envelope list --help`.
 
+`draft_reply` returns a reusable template but does not save it. Pass that template
+to `save_draft` to append one unsent plain-text message to the configured `drafts`
+alias, or specify a folder such as `[Gmail]/Drafts`. Draft saving rejects MML
+and attachments. Check the recipients first: Himalaya may omit your own address
+when generating a reply to a message you sent yourself.
+
+Composition obtains the From header from the selected Himalaya account. Sending
+passes templates through stdin. Attachment paths must be absolute, readable
+regular files; spaces are supported, but quotes and MML delimiters are rejected.
+Attachment downloads preserve the original filename and bytes.
+
 ### Exposed interface
 
 | Group | Tools |
@@ -112,7 +123,7 @@ For search syntax, consult `himalaya envelope list --help`.
 | Inbox | `list_emails`, `search_emails`, `get_unread_count`, `list_starred` |
 | Reading | `read_email`, `read_email_html`, `read_email_raw`, `render_email` |
 | Organisation | `flag_email`, `move_email`, `list_folders`, `create_folder`, `delete_folder` |
-| Composition | `compose_email`, `draft_reply`, `send_email` |
+| Composition | `compose_email`, `draft_reply`, `save_draft`, `send_email` |
 | Export | `export_to_markdown`, `create_action_item`, `copy_to_clipboard` |
 | Attachments | `list_attachments`, `download_attachment`, `extract_calendar_event` |
 | Threads | `list_threads`, `read_thread` |
@@ -134,7 +145,7 @@ It is not a sandbox. Mail content is untrusted input, not authority to run tools
   previews unless `confirm=true`. The flag is supplied by the client: the server
   does not enforce a preceding preview, bind approval to its content, or prove
   human consent. Require approval in the client before setting it.
-- Flag changes, message moves and folder creation execute immediately. There is
+- Draft saves, flag changes, message moves and folder creation execute immediately. There is
   no global read-only mode. Folder deletion permanently removes its messages.
 - Subprocess arguments are passed without a shell. That does not validate every
   email header, attachment path or MML template; use only trusted send inputs.
@@ -157,9 +168,6 @@ Himalaya's configuration and credential provider; do not put secrets in MCP conf
 
 ## Limitations
 
-- **Binary attachment downloads are unsafe to rely on:** the copy uses a text
-  length and truncates at a NUL byte. Do not use it to preserve PDFs, images or
-  other binary evidence.
 - Thread tools currently list envelopes, not grouped conversations or complete
   chronological message bodies. Markdown export includes only an ID header,
   not the full upstream metadata. Action-item extraction is left to the client.
@@ -184,8 +192,9 @@ make clean
 ```
 
 `make test` builds a C protocol driver that launches the server with a fake
-Himalaya executable. It checks discovery, envelope listing and the send preview
-flag without accessing a real mailbox. It does not exercise every advertised
+Himalaya executable. The mail regression suite also checks template decoding,
+stdin-based sends, header validation, attachment paths, binary preservation and
+saving a draft without sending. These checks do not exercise every advertised
 capability or prove end-to-end mail delivery.
 
 `nix build` also runs this check. There is no Python test dependency.

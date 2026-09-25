@@ -1,5 +1,7 @@
 result
 *.o
 himalaya-mcp
+protocol_test
+mail_test
 .direnv
 .pre-commit-config.yaml

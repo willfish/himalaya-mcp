@@ -33,6 +33,7 @@ typedef struct {
 
 void capture_free(Capture *c);
 int run_cmd(char *const argv[], Capture *cap);
+int run_cmd_input(char *const argv[], Capture *cap, const char *input);
 
 const char *arg_str(const cJSON *args, const char *key);
 int arg_int(const cJSON *args, const char *key, int fallback);
@@ -47,6 +48,7 @@ int valid_flag(const char *s);
 void him_start(Argv *a);
 void him_opts(Argv *a, const char *account);
 Result him_run(Argv *a);
+Result him_run_input(Argv *a, const char *input);
 char *format_envelopes(const char *json_text, int *count);
 char *read_file(const char *path, size_t max_bytes);
 char *state_file(const char *name);

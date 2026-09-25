@@ -13,8 +13,12 @@ himalaya-mcp: src/main.c src/util.c src/tools.c src/common.h src/tools.h
 protocol_test: tests/protocol_test.c
 	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -o $@ tests/protocol_test.c $(CJSON_LIBS)
 
-test: himalaya-mcp protocol_test
+mail_test: tests/mail_test.c src/util.c src/tools.c src/common.h src/tools.h
+	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -Isrc -o $@ tests/mail_test.c src/util.c src/tools.c $(CJSON_LIBS)
+
+test: himalaya-mcp protocol_test mail_test
 	./protocol_test ./himalaya-mcp
+	./mail_test
 
 clean:
-	rm -f himalaya-mcp protocol_test
+	rm -f himalaya-mcp protocol_test mail_test

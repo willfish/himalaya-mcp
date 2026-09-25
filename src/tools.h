@@ -19,6 +19,7 @@ Result tool_export_to_markdown(const cJSON *args);
 Result tool_create_action_item(const cJSON *args);
 Result tool_draft_reply(const cJSON *args);
 Result tool_send_email(const cJSON *args);
+Result tool_save_draft(const cJSON *args);
 Result tool_copy_to_clipboard(const cJSON *args);
 Result tool_list_attachments(const cJSON *args);
 Result tool_download_attachment(const cJSON *args);
