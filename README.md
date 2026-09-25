@@ -74,7 +74,7 @@ locates its bundled Himalaya CLI; no environment overrides are needed.
 
 ## What it does
 
-Search and read mail, draft replies, send approved messages, organise folders and
+Search and read mail, draft replies, send messages, organise folders and
 flags, download attachments, and export messages or calendar files.
 
 Try asking your assistant:
@@ -86,20 +86,6 @@ Try asking your assistant:
 > Download the attachments from this email.
 
 [Explore the tools, prompts and resources →](docs/tools.md)
-
-## Before you use it
-
-- **Keep approval in your client.** The server can send mail and change folders.
-  A tool's confirmation flag is not proof of human consent. Treat email content as untrusted.
-- **Some operations mark mail read.** HTML/raw reads and attachment operations
-  mark messages Seen; ordinary text reads preserve unread status.
-- **Local records are not a scheduler.** Reminders and snoozes do not send notifications
-  or hide mail. Calendar output is an ICS file, not a calendar-service integration.
-- **Know the boundaries.** Thread tools are not complete conversations. macOS binaries
-  are ad-hoc signed, not Apple-notarised.
-
-Read the [side effects and limitations](docs/tools.md#safety-and-side-effects) before
-granting an assistant access to your mailbox.
 
 ## Documentation
 
